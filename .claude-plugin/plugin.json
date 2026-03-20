@@ -1,0 +1,8 @@
+{
+  "name": "lors-plugin",
+  "description": "Shared plugin for lorenz workspace",
+  "version": "1.0.0",
+  "author": {
+    "name": "Lorenz Helle"
+  }
+}
