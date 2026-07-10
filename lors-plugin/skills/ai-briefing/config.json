@@ -3,7 +3,7 @@
     { "name": "AI Engineer", "channel_id": "UCLKPca3kwwd-B59HNr-_lvA" }
   ],
   "feeds": [
-    { "name": "REPLACE_ME newsletter", "url": "https://REPLACE_WITH_RSS_URL", "type": "newsletter" },
-    { "name": "REPLACE_ME podcast", "url": "https://REPLACE_WITH_RSS_URL", "type": "podcast" }
+    { "name": "Doppelgänger newsletter", "url": "https://rss.beehiiv.com/feeds/AXcLyqBguk.xml", "type": "newsletter" },
+    { "name": "Programmierbar podcast", "url": "https://rss.buzzsprout.com/176239.rss", "type": "podcast" }
   ]
 }
