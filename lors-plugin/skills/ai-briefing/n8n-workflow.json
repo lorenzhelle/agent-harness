@@ -1,0 +1,255 @@
+{
+  "name": "AI Knowledge Briefing",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "5 7 * * *" }]
+        }
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000001",
+      "name": "Every Day 7:05am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 440]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            { "name": "anthropicApiKey", "value": "sk-ant-REPLACE_ME" },
+            { "name": "obsidianVaultPath", "value": "/Users/lors/REPLACE_VAULT_PATH/AI Briefings" },
+            { "name": "redditSubs", "value": "MachineLearning+artificial+LocalLLaMA+singularity" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000002",
+      "name": "⚙️ Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [460, 440]
+    },
+    {
+      "parameters": {
+        "url": "https://www.youtube.com/feeds/videos.xml?channel_id=REPLACE_CHANNEL_ID_1",
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000003",
+      "name": "YouTube: Channel 1",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [680, 180]
+    },
+    {
+      "parameters": {
+        "url": "https://www.youtube.com/feeds/videos.xml?channel_id=REPLACE_CHANNEL_ID_2",
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000004",
+      "name": "YouTube: Channel 2",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.reddit.com/r/{{ $node['⚙️ Config'].json.redditSubs }}/new.json?limit=30",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "User-Agent", "value": "n8n:ai-briefing:1.0 (by /u/lorenz)" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000005",
+      "name": "Reddit: AI Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 440]
+    },
+    {
+      "parameters": {
+        "url": "https://REPLACE_WITH_NEWSLETTER_RSS_URL",
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000006",
+      "name": "Newsletter RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [680, 580]
+    },
+    {
+      "parameters": {
+        "url": "https://REPLACE_WITH_PODCAST_RSS_URL",
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000007",
+      "name": "Podcast RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [680, 700]
+    },
+    {
+      "parameters": { "mode": "append", "options": {} },
+      "id": "aaaaaaaa-0000-0000-0000-000000000008",
+      "name": "Merge: YouTube",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [900, 240]
+    },
+    {
+      "parameters": { "mode": "append", "options": {} },
+      "id": "aaaaaaaa-0000-0000-0000-000000000009",
+      "name": "Merge: Newsletter+Podcast",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [900, 640]
+    },
+    {
+      "parameters": { "mode": "append", "options": {} },
+      "id": "aaaaaaaa-0000-0000-0000-000000000010",
+      "name": "Merge: YT+Reddit",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1100, 360]
+    },
+    {
+      "parameters": { "mode": "append", "options": {} },
+      "id": "aaaaaaaa-0000-0000-0000-000000000011",
+      "name": "Merge: All Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1300, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cutoff = Date.now() - 24 * 60 * 60 * 1000;\nconst normalized = [];\n\nfor (const item of $input.all()) {\n  const d = item.json;\n\n  // Reddit JSON API — the response is a single Listing object\n  if (d.kind === 'Listing' && d.data && d.data.children) {\n    for (const post of d.data.children) {\n      const p = post.data;\n      const ts = (p.created_utc || 0) * 1000;\n      if (ts >= cutoff) {\n        normalized.push({\n          title: p.title,\n          url: `https://reddit.com${p.permalink}`,\n          summary: (p.selftext || p.url || '').slice(0, 400),\n          source: `r/${p.subreddit}`,\n          score: p.score || 0,\n          publishedAt: new Date(ts).toISOString()\n        });\n      }\n    }\n    continue;\n  }\n\n  // RSS / Atom items (YouTube, newsletters, podcasts)\n  if (d.title) {\n    const pubDate = d.pubDate || d.isoDate || d.published || d.updated;\n    const ts = pubDate ? new Date(pubDate).getTime() : Date.now();\n    if (ts >= cutoff) {\n      normalized.push({\n        title: d.title,\n        url: d.link || d.guid || '',\n        summary: (d.contentSnippet || d.summary || d.content || '').slice(0, 400),\n        source: d.feedUrl || 'RSS',\n        score: 0,\n        publishedAt: new Date(ts).toISOString()\n      });\n    }\n  }\n}\n\n// Sort: upvotes first, then recency\nnormalized.sort((a, b) => (b.score - a.score) || (new Date(b.publishedAt) - new Date(a.publishedAt)));\n\nconst items = normalized.slice(0, 50); // cap to stay within token budget\n\nif (items.length === 0) {\n  return [{ json: { count: 0, items: [], promptText: '' } }];\n}\n\nconst today = new Date().toLocaleDateString('en-US', {\n  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'\n});\n\nconst itemsText = items\n  .map((i, idx) =>\n    `${idx + 1}. [${i.source}] ${i.title}\\n   ${i.url}\\n   ${(i.summary || '').replace(/\\n/g, ' ')}`\n  )\n  .join('\\n\\n');\n\nconst promptText = `You are an AI research curator. Analyze these ${items.length} items from the past 24 hours and produce a concise, high-signal daily briefing.\\n\\nFocus on:\\n- Major model releases, research breakthroughs, capability announcements\\n- Significant industry moves (funding, partnerships, policy)\\n- Viral community discussions with substantive insight\\n- Practical tools or techniques worth knowing\\n\\nSkip hype and low-signal items. Be direct and opinionated about what actually matters.\\n\\nFormat as markdown:\\n\\n## 🤖 AI Briefing – ${today}\\n\\n### Key Developments\\n<!-- 3-5 bullets, most important first -->\\n\\n### Worth Reading\\n<!-- 2-3 items with a sentence on why they matter -->\\n\\n### Community Pulse\\n<!-- 1-2 notable discussions -->\\n\\n---\\n*${items.length} items analyzed*\\n\\n---\\n\\n${itemsText}`;\n\nreturn [{ json: { count: items.length, items, promptText } }];"
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000012",
+      "name": "Normalize & Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            { "value1": "={{ $json.count }}", "operation": "larger", "value2": 0 }
+          ]
+        }
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000013",
+      "name": "Items Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1700, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $node['⚙️ Config'].json.anthropicApiKey }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-opus-4-8', max_tokens: 2048, messages: [{ role: 'user', content: $json.promptText }] }) }}",
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000014",
+      "name": "Claude: Summarize",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1920, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const claudeResponse = $json.content?.[0]?.text || 'Claude returned no response';\nconst today = new Date().toISOString().split('T')[0];\nconst vaultPath = $node['⚙️ Config'].json.obsidianVaultPath;\n\nconst noteContent = claudeResponse + '\\n';\nconst filename = `AI Briefing - ${today}.md`;\nconst filepath = `${vaultPath}/${filename}`;\n\nreturn [{\n  json: { date: today, filename, filepath },\n  binary: {\n    data: {\n      data: Buffer.from(noteContent).toString('base64'),\n      mimeType: 'text/markdown',\n      fileName: filename\n    }\n  }\n}];"
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000015",
+      "name": "Format Note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 400]
+    },
+    {
+      "parameters": {
+        "fileName": "={{ $json.filepath }}",
+        "options": {}
+      },
+      "id": "aaaaaaaa-0000-0000-0000-000000000016",
+      "name": "Write to Obsidian Vault",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [2360, 400]
+    }
+  ],
+  "connections": {
+    "Every Day 7:05am": {
+      "main": [[{ "node": "⚙️ Config", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Config": {
+      "main": [[
+        { "node": "YouTube: Channel 1", "type": "main", "index": 0 },
+        { "node": "YouTube: Channel 2", "type": "main", "index": 0 },
+        { "node": "Reddit: AI Posts", "type": "main", "index": 0 },
+        { "node": "Newsletter RSS", "type": "main", "index": 0 },
+        { "node": "Podcast RSS", "type": "main", "index": 0 }
+      ]]
+    },
+    "YouTube: Channel 1": {
+      "main": [[{ "node": "Merge: YouTube", "type": "main", "index": 0 }]]
+    },
+    "YouTube: Channel 2": {
+      "main": [[{ "node": "Merge: YouTube", "type": "main", "index": 1 }]]
+    },
+    "Reddit: AI Posts": {
+      "main": [[{ "node": "Merge: YT+Reddit", "type": "main", "index": 1 }]]
+    },
+    "Newsletter RSS": {
+      "main": [[{ "node": "Merge: Newsletter+Podcast", "type": "main", "index": 0 }]]
+    },
+    "Podcast RSS": {
+      "main": [[{ "node": "Merge: Newsletter+Podcast", "type": "main", "index": 1 }]]
+    },
+    "Merge: YouTube": {
+      "main": [[{ "node": "Merge: YT+Reddit", "type": "main", "index": 0 }]]
+    },
+    "Merge: Newsletter+Podcast": {
+      "main": [[{ "node": "Merge: All Sources", "type": "main", "index": 1 }]]
+    },
+    "Merge: YT+Reddit": {
+      "main": [[{ "node": "Merge: All Sources", "type": "main", "index": 0 }]]
+    },
+    "Merge: All Sources": {
+      "main": [[{ "node": "Normalize & Build Prompt", "type": "main", "index": 0 }]]
+    },
+    "Normalize & Build Prompt": {
+      "main": [[{ "node": "Items Found?", "type": "main", "index": 0 }]]
+    },
+    "Items Found?": {
+      "main": [
+        [{ "node": "Claude: Summarize", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Claude: Summarize": {
+      "main": [[{ "node": "Format Note", "type": "main", "index": 0 }]]
+    },
+    "Format Note": {
+      "main": [[{ "node": "Write to Obsidian Vault", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

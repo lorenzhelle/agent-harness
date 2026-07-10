@@ -10,6 +10,7 @@ Personal Claude Code plugin with custom skills for my workspace.
 | `close-day` | Plays back today's daily note into project files — meeting notes, people, TODOs |
 | `close-project` | Structured PARA project closing ceremony: distill, clean, archive |
 | `youtube-summary` | Fetches a YouTube video's transcript and summarizes it |
+| `ai-briefing` | Nightly n8n pipeline: fetches AI news from YouTube/Reddit/RSS, summarizes with Claude, writes to Obsidian |
 
 ## Install this plugin in Claude Code
 

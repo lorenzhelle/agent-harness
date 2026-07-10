@@ -8,7 +8,7 @@
     {
       "name": "lors-plugin",
       "source": "./lors-plugin",
-      "description": "Skills for daily notes, project closing, and YouTube summaries",
+      "description": "Skills for daily notes, project closing, YouTube summaries, and nightly AI briefings",
       "author": {
         "name": "Lorenz Helle"
       },
