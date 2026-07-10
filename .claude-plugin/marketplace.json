@@ -1,0 +1,18 @@
+{
+  "name": "lors-plugins",
+  "owner": {
+    "name": "Lorenz Helle"
+  },
+  "description": "Personal Claude Code plugins for Lorenz's workspace",
+  "plugins": [
+    {
+      "name": "lors-plugin",
+      "source": "./lors-plugin",
+      "description": "Skills for daily notes, project closing, and YouTube summaries",
+      "author": {
+        "name": "Lorenz Helle"
+      },
+      "homepage": "https://github.com/lorenzhelle/claude-plugin"
+    }
+  ]
+}
