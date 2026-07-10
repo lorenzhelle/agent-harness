@@ -20,8 +20,14 @@ import requests
 from faster_whisper import WhisperModel
 
 
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+
 def download_audio(url: str, dest_path: str) -> None:
-    with requests.get(url, stream=True, timeout=60) as response:
+    # Some podcast hosts (e.g. Buzzsprout) return 403 for the default
+    # python-requests user agent; a browser-like one works.
+    headers = {"User-Agent": USER_AGENT}
+    with requests.get(url, headers=headers, stream=True, timeout=60) as response:
         response.raise_for_status()
         with open(dest_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=1 << 16):

@@ -3,7 +3,20 @@
     { "name": "AI Engineer", "channel_id": "UCLKPca3kwwd-B59HNr-_lvA" }
   ],
   "feeds": [
-    { "name": "Doppelgänger newsletter", "url": "https://rss.beehiiv.com/feeds/AXcLyqBguk.xml", "type": "newsletter" },
-    { "name": "Programmierbar podcast", "url": "https://rss.buzzsprout.com/176239.rss", "type": "podcast" }
+    {
+      "name": "Doppelgänger newsletter",
+      "url": "https://rss.beehiiv.com/feeds/AXcLyqBguk.xml",
+      "type": "newsletter",
+      "since_days": 21,
+      "max_items": 1
+    },
+    {
+      "name": "Programmierbar podcast",
+      "url": "https://rss.buzzsprout.com/176239.rss",
+      "type": "podcast",
+      "since_days": 10,
+      "title_regex": "^News AI\\b",
+      "max_items": 1
+    }
   ]
 }

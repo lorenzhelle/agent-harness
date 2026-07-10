@@ -7,7 +7,12 @@
 fetch_transcript.py - Fetches the transcript for a YouTube video and prints it as plain text.
 
 Usage:
-    python fetch_transcript.py <youtube_url_or_id> [--lang en,de]
+    python fetch_transcript.py <youtube_url_or_id> [--lang en,de] [--with-timestamps]
+
+--with-timestamps prefixes each line with its start time in seconds, e.g.
+"[83s] some caption text" - useful when the caller needs to point back at a
+specific moment in the video (e.g. a slide/diagram the words alone don't
+capture), without downloading the video or extracting frames.
 """
 
 import argparse
@@ -41,6 +46,11 @@ def main() -> None:
     parser.add_argument(
         "--lang", default="en,de", help="comma-separated preferred language codes"
     )
+    parser.add_argument(
+        "--with-timestamps",
+        action="store_true",
+        help="prefix each line with its start time in seconds, e.g. '[83s] ...'",
+    )
     args = parser.parse_args()
 
     video_id = extract_video_id(args.url)
@@ -57,7 +67,10 @@ def main() -> None:
         sys.exit(1)
 
     for snippet in transcript:
-        print(snippet.text)
+        if args.with_timestamps:
+            print(f"[{int(snippet.start)}s] {snippet.text}")
+        else:
+            print(snippet.text)
 
 
 if __name__ == "__main__":

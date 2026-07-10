@@ -23,12 +23,14 @@ Take the YouTube URL (or bare video ID) from the user's message.
 ### 2. Fetch the transcript
 
 ```bash
-uv run /home/lhelle/repos/personal/agent-harness/lors-plugin/skills/youtube-summary/fetch_transcript.py "<url>"
+uv run /Users/lors/Repos/claude-plugin/lors-plugin/skills/youtube-summary/fetch_transcript.py "<url>"
 ```
 
 Prints the transcript as plain text (one line per caption snippet, no
-timestamps). Default language preference is `en,de` - pass `--lang` to
-override, e.g. `--lang de,en`.
+timestamps by default - pass `--with-timestamps` to prefix each line with its
+start time in seconds, e.g. `[83s] ...`, useful when you need to point back at
+a specific moment in the video). Default language preference is `en,de` -
+pass `--lang` to override, e.g. `--lang de,en`.
 
 If the script errors with "no transcript available": tell the user the video
 has no captions (disabled or none exist) and stop - do not fall back to audio
