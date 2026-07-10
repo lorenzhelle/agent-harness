@@ -1,0 +1,9 @@
+{
+  "youtube_channels": [
+    { "name": "AI Engineer", "channel_id": "UCLKPca3kwwd-B59HNr-_lvA" }
+  ],
+  "feeds": [
+    { "name": "REPLACE_ME newsletter", "url": "https://REPLACE_WITH_RSS_URL", "type": "newsletter" },
+    { "name": "REPLACE_ME podcast", "url": "https://REPLACE_WITH_RSS_URL", "type": "podcast" }
+  ]
+}
