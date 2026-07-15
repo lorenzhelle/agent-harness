@@ -40,6 +40,26 @@ another ~15-30s if any heavy discretionary tools are found, since the
 script fires a second verification probe to confirm they're actually
 removable via `permissions.deny` before suggesting it.
 
+**Handling the API key/token — never expose the value, only check presence.**
+`analyze.py` itself never prints or logs the key: it's read once from the
+environment and used only inside the `x-api-key` HTTP header sent directly
+to the endpoint, never echoed to stdout/stderr. Keep it that way when
+working on or around this skill:
+- To confirm the credentials are set before running the audit, use:
+  ```bash
+  uv run /Users/lors/Repos/claude-plugin/lors-plugin/skills/token-audit/scripts/check_env.py
+  ```
+  It only prints `set`/`unset` per variable and exits non-zero if anything
+  required is missing — never the actual value. Prefer this over
+  `echo $ANTHROPIC_AUTH_TOKEN`, `env`, or `printenv`, none of which should
+  be run here since they'd put the raw secret into context.
+- If inspecting `~/.claude/settings.json`'s `env` block for troubleshooting,
+  redact the token's value before showing it to the user or including it in
+  your own output — show the key name and `"<redacted>"`, not the string.
+- This applies to any new debug output added to the script too: don't add
+  a print/log line that includes `API_KEY`/`HEADERS` (which contains the
+  key) — log config presence/shape, never secret values.
+
 ## What it reports
 
 A breakdown into four sections, each sorted heaviest-first:
