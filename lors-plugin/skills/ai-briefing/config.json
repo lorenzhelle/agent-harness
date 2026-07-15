@@ -18,5 +18,10 @@
       "title_regex": "^News AI\\b",
       "max_items": 1
     }
-  ]
+  ],
+  "tts": {
+    "enabled": true,
+    "voice_id": "",
+    "model_id": "eleven_multilingual_v2"
+  }
 }
