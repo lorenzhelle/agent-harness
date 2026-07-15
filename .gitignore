@@ -2,3 +2,4 @@
 !**/ai-briefing/output/.gitkeep
 **/ai-briefing/state.json
 .env
+*.pyc

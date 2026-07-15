@@ -11,6 +11,7 @@ Personal Claude Code plugin with custom skills for my workspace.
 | `close-project` | Structured PARA project closing ceremony: distill, clean, archive |
 | `youtube-summary` | Fetches a YouTube video's transcript and summarizes it |
 | `ai-briefing` | Fetches new items from configured YouTube channels/podcasts/newsletters, filters for relevance, transcribes and summarizes into a digest |
+| `token-audit` | Audits what's consuming tokens in Claude Code requests — system prompt, tools/MCP schemas, catalog — cross-referenced against real usage history |
 
 ## Install this plugin in Claude Code
 
