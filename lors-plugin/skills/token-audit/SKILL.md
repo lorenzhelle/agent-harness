@@ -182,6 +182,57 @@ overhead constant). This is still an exact real-tokenizer count — just
 measured through a workaround path — not a heuristic estimate. It prints a
 note to stderr when this fallback is active.
 
+## Known quirk #2: tool search silently disabled — inflates the whole TOOLS section
+
+The `TOOLS` section (usually the single biggest chunk, 60-85% of total) is
+only this large because every tool's *full* schema is sent on *every*
+request. Claude Code has an experimental **tool search** mode
+(`ENABLE_TOOL_SEARCH` in settings.json) meant to cut this dramatically by
+letting the model search for relevant tools on demand instead of always
+paying the full-schema cost — so before recommending per-tool
+`permissions.deny` rules, check whether tool search is actually active,
+since fixing *that* is a much bigger lever than denying individual tools.
+
+Confirmed via a live debugging session (2026-07, Slack thread with Jonas
+Brandes) — **this is not a LiteLLM/backend issue**, it's purely local
+Claude Code client behavior:
+
+- **`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`**, if set to any truthy value
+  (`1`, `true`, ...), makes Claude Code silently ignore
+  `ENABLE_TOOL_SEARCH` and force its internal tool-search mode to
+  "standard" (i.e. full schemas, every request) — regardless of what's
+  configured in settings.json. Check with:
+  ```bash
+  env | grep CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+  ```
+  If set truthy and you want tool search, unset it or set it to `0`/`false`.
+- Even with that env var unset, `ToolSearchTool` itself can be **disallowed
+  at an org-managed policy level** (a `managed-settings.json` /
+  growthbook/statsig feature-gate layer above `~/.claude` config) — the
+  same mechanism that can org-wide-disable Fast mode. When this is the
+  cause, `ENABLE_TOOL_SEARCH=true` in the user's own settings.json is a
+  no-op: nothing fixable locally in `settings.json` or `.claude.json`, it
+  needs to be enabled at the org/managed-policy level. If tool search stays
+  off despite `ENABLE_TOOL_SEARCH=true` being read correctly and the env
+  var above being unset, say this plainly rather than suggesting more local
+  settings tweaks — flag it as an org-policy question for whoever manages
+  the deployment.
+- Real-world effect observed: fixing the env var alone took one session
+  from a much higher context size down to 21,601 tokens (11% of context
+  window) for a bare "hey" — still high, because **most of that remainder
+  was cache read**, not fresh cost. Cache-read tokens count toward the
+  CLI's live context-window percentage but are not part of this script's
+  grand total (which measures a cold, uncached request) — don't be
+  surprised if the two numbers don't match; that's expected, not a bug in
+  either measurement.
+
+Practical order of checks when `TOOLS` dominates: (1) is tool search even
+enabled and not silently overridden by the env var above, (2) is
+`ToolSearchTool` actually available or blocked by org policy, (3) only then
+fall back to the per-tool `permissions.deny` suggestions below — those are
+real savings too, but tool search fixes the shape of the whole problem
+rather than trimming it tool-by-tool.
+
 ## Required final step: your own recommendation
 
 The script's output is raw data plus mechanical suggestions (threshold cuts,
@@ -212,9 +263,12 @@ printed suggestions. Concretely:
 ## Interpreting results / follow-up actions
 
 - If **tools** dominates (commonly 70-85% of a fresh session's first-turn
-  tokens): that's what the SUGGESTED FIXES block above is for — walk the
-  user through the specific deny rules or plugin toggles it verified,
-  starting with the heaviest entries.
+  tokens): check tool search status first (see "Known quirk #2" above) —
+  that's a bigger lever than per-tool deny rules and is easy to
+  misdiagnose as a LiteLLM/backend problem when it's actually local env
+  config or org policy. Only after that, walk the user through the
+  SUGGESTED FIXES block's specific deny rules or plugin toggles, starting
+  with the heaviest entries.
 - If **system** is large: check for CLAUDE.md bloat or oversized memory
   files (`~/.claude/projects/*/memory/`).
 - If a specific **catalog** entry stands out: the agent-types prose row is
