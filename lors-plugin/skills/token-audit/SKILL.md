@@ -226,12 +226,14 @@ Claude Code client behavior:
   surprised if the two numbers don't match; that's expected, not a bug in
   either measurement.
 
-Practical order of checks when `TOOLS` dominates: (1) is tool search even
-enabled and not silently overridden by the env var above, (2) is
-`ToolSearchTool` actually available or blocked by org policy, (3) only then
-fall back to the per-tool `permissions.deny` suggestions below — those are
-real savings too, but tool search fixes the shape of the whole problem
-rather than trimming it tool-by-tool.
+Run the normal token audit and per-tool `permissions.deny` suggestions
+first, as always — those are real, immediate savings. Then, when `TOOLS`
+dominates, also check tool search as an additional, higher-ceiling lever:
+(1) is tool search even enabled and not silently overridden by the env var
+above, (2) is `ToolSearchTool` actually available or blocked by org policy.
+Tool search fixes the shape of the whole problem rather than trimming it
+tool-by-tool, so surface it as a complementary option alongside the deny
+suggestions, not a gate before them.
 
 ## Required final step: your own recommendation
 
@@ -263,12 +265,13 @@ printed suggestions. Concretely:
 ## Interpreting results / follow-up actions
 
 - If **tools** dominates (commonly 70-85% of a fresh session's first-turn
-  tokens): check tool search status first (see "Known quirk #2" above) —
-  that's a bigger lever than per-tool deny rules and is easy to
-  misdiagnose as a LiteLLM/backend problem when it's actually local env
-  config or org policy. Only after that, walk the user through the
-  SUGGESTED FIXES block's specific deny rules or plugin toggles, starting
-  with the heaviest entries.
+  tokens): run the audit and walk the user through the SUGGESTED FIXES
+  block's specific deny rules or plugin toggles as usual, starting with
+  the heaviest entries. Alongside those per-tool fixes, also check tool
+  search status (see "Known quirk #2" above) as a separate, bigger lever —
+  it's easy to misdiagnose as a LiteLLM/backend problem when it's actually
+  local env config or org policy, so mention it even when the per-tool
+  deny suggestions already look sufficient.
 - If **system** is large: check for CLAUDE.md bloat or oversized memory
   files (`~/.claude/projects/*/memory/`).
 - If a specific **catalog** entry stands out: the agent-types prose row is
