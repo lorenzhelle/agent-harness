@@ -87,6 +87,32 @@ Plus a grand total, a top-10 heaviest-items list across all sections, a
 registered skill against usage history regardless of how small its
 individual token cost is.
 
+## Full overview file — every message/part sent in the probe request
+
+Besides the terminal summary, the script writes a complete Markdown
+overview to `output/<timestamp>.md` (next to `SKILL.md`, gitignored like
+`ai-briefing`'s `output/` — see its `.gitkeep`) and prints the path at the
+end of the run. Point the user at this file when they want to inspect
+individual entries rather than just the aggregate percentages.
+
+Unlike the terminal report (which only shows token/char counts per row),
+the Markdown file adds a **content preview** column for every single
+row — one table per section (SYSTEM, TOOLS, MESSAGES, CATALOG, CONFIG),
+each row showing tokens, % of total, chars, name, and a truncated
+single-line preview of the actual text/schema sent (e.g. the first ~200
+chars of a tool's description, or the base system prompt's opening
+lines). This is the artifact to open when the user asks "what exactly is
+in this," not just "how many tokens" — the terminal report answers the
+latter, this file answers the former. The same SUGGESTED FIXES / MCP
+SERVERS / SKILLS sections from the terminal report are appended at the
+end of the file too, so it's a self-contained record of one audit run.
+
+Since it never truncates *which* rows are shown (every system block, every
+tool, every message, every catalog/skill/MCP entry gets its own row), this
+file is also the right thing to diff between two audit runs (e.g.
+before/after applying a suggested `permissions.deny` fix) to see exactly
+which rows disappeared or shrank.
+
 ## Suggested fixes: cutting real token cost, verified empirically
 
 Every request-level tool listed in the audit that isn't a core tool (Bash,

@@ -21,6 +21,12 @@ for that at startup and, if detected, counts every section by wrapping its
 raw text as a single user message instead (subtracting a measured per-request
 overhead constant). This gives an exact real-tokenizer count, just via a
 workaround path.
+
+Besides the terminal report, this also writes a Markdown overview of every
+message/part sent in the probe request (one row per system block, tool
+schema, message, and catalog entry, with token count and a content preview)
+to output/<timestamp>.md next to this script's skill directory - see
+write_markdown_report().
 """
 import glob
 import json
@@ -37,6 +43,7 @@ from pathlib import Path
 import requests
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 
 BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/")
 API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
@@ -99,6 +106,17 @@ def count_text(text):
         _EMPTY_OVERHEAD = count_raw({"model": MODEL, "messages": [{"role": "user", "content": ""}]})
     total = count_raw({"model": MODEL, "messages": [{"role": "user", "content": text}]})
     return max(0, total - _EMPTY_OVERHEAD)
+
+
+def preview_text(text, limit=200):
+    """Collapse whitespace and truncate to a single-line preview, for the
+    overview table (both terminal top-10 and the markdown report)."""
+    if not text:
+        return ""
+    flat = " ".join(str(text).split())
+    if len(flat) > limit:
+        return flat[:limit].rstrip() + "…"
+    return flat
 
 
 def run_probe_request():
@@ -429,6 +447,54 @@ def text_of_message(msg):
     return ""
 
 
+def md_escape(text):
+    """Escape a preview string so it's safe inside a markdown table cell."""
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def write_markdown_report(data, by_section, grand_total, extra_sections):
+    """Write a full overview of every message/part sent in the probe request
+    to output/<timestamp>.md — one table per section (system/tools/messages/
+    catalog/config), each row showing tokens, %, chars, and a content preview,
+    plus the same SUGGESTED FIXES / MCP SERVERS / SKILLS sections as the
+    terminal report. Returns the path written."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    out_path = OUTPUT_DIR / f"{timestamp}.md"
+
+    lines = [
+        f"# Token Audit — {timestamp}",
+        "",
+        f"- Model: `{data.get('model')}`",
+        f"- Endpoint: `{BASE_URL}`",
+        f"- **Total input tokens: {grand_total:,}**",
+        "",
+    ]
+
+    for section in ["system", "tools", "messages", "catalog", "config"]:
+        entries = by_section.get(section)
+        if not entries:
+            continue
+        entries = sorted(entries, key=lambda e: -e[1])
+        section_total = sum(e[1] for e in entries)
+        pct = 100 * section_total / grand_total if grand_total else 0
+        lines.append(f"## {section.upper()} — {section_total:,} tokens ({pct:.1f}% of total)")
+        lines.append("")
+        lines.append("| Tokens | % of total | Chars | Name | Preview |")
+        lines.append("|---|---|---|---|---|")
+        for name, tokens, chars, preview in entries:
+            bar_pct = 100 * tokens / grand_total if grand_total else 0
+            lines.append(
+                f"| {tokens:,} | {bar_pct:.1f}% | {chars:,} | {md_escape(name)} | {md_escape(preview)} |"
+            )
+        lines.append("")
+
+    lines += extra_sections
+
+    out_path.write_text("\n".join(lines))
+    return out_path
+
+
 def main():
     supported = detect_system_tools_supported()
     if not supported:
@@ -440,12 +506,12 @@ def main():
 
     data = run_probe_request()
 
-    rows = []  # (section, subsection, tokens, chars)
+    rows = []  # (section, subsection, tokens, chars, preview)
 
     # --- system blocks ---
     for i, (label, text) in enumerate(extract_system_blocks(data.get("system"))):
         name = classify_system_block(i, text)
-        rows.append(("system", name, count_text(text), len(text)))
+        rows.append(("system", name, count_text(text), len(text), preview_text(text)))
 
     # --- tools ---
     tools = data.get("tools", [])
@@ -456,7 +522,8 @@ def main():
         desc_text = t.get("description", "")
         full_text = desc_text + "\n" + schema_text
         tool_total_chars += len(full_text)
-        rows.append(("tools", name, count_text(full_text), len(full_text)))
+        rows.append(("tools", name, count_text(full_text), len(full_text),
+                     preview_text(desc_text or schema_text)))
 
     # --- messages ---
     # The mid-conversation "Available agent types..." system-reminder bundles
@@ -471,31 +538,34 @@ def main():
             continue  # handled below as its own section
         label = classify_message(i, msg)
         text = text_of_message(msg)
-        rows.append(("messages", label, count_text(text), len(text)))
+        rows.append(("messages", label, count_text(text), len(text), preview_text(text)))
 
     if catalog_text:
         prose = agent_catalog_prose(catalog_text)
-        rows.append(("catalog", "agent-types catalog", count_text(prose), len(prose)))
+        rows.append(("catalog", "agent-types catalog", count_text(prose), len(prose), preview_text(prose)))
         for server_name, server_text in split_mcp_servers(catalog_text):
-            rows.append(("catalog", f"mcp:{server_name}", count_text(server_text), len(server_text)))
+            rows.append(("catalog", f"mcp:{server_name}", count_text(server_text), len(server_text),
+                         preview_text(server_text)))
         for skill_name, skill_text in split_skill_catalog(catalog_text):
-            rows.append(("catalog", f"skill:{skill_name}", count_text(skill_text), len(skill_text)))
+            rows.append(("catalog", f"skill:{skill_name}", count_text(skill_text), len(skill_text),
+                         preview_text(skill_text)))
 
     # --- betas / metadata (usually negligible, but flag if huge) ---
     betas = data.get("betas", [])
     if betas:
-        rows.append(("config", f"betas ({len(betas)} flags)", 0, len(json.dumps(betas))))
+        rows.append(("config", f"betas ({len(betas)} flags)", 0, len(json.dumps(betas)),
+                     preview_text(", ".join(betas))))
 
     grand_total = sum(r[2] for r in rows)
+
+    by_section = {}
+    for section, name, tokens, chars, preview in rows:
+        by_section.setdefault(section, []).append((name, tokens, chars, preview))
 
     # --- print report ---
     print(f"\n{'='*72}")
     print(f"TOKEN AUDIT — model={data.get('model')}  endpoint={BASE_URL}")
     print(f"{'='*72}\n")
-
-    by_section = {}
-    for section, name, tokens, chars in rows:
-        by_section.setdefault(section, []).append((name, tokens, chars))
 
     for section in ["system", "tools", "messages", "catalog", "config"]:
         if section not in by_section:
@@ -504,7 +574,7 @@ def main():
         section_total = sum(e[1] for e in entries)
         pct = 100 * section_total / grand_total if grand_total else 0
         print(f"## {section.upper()}  —  {section_total:,} tokens ({pct:.1f}% of total)")
-        for name, tokens, chars in entries:
+        for name, tokens, chars, _preview in entries:
             bar_pct = 100 * tokens / grand_total if grand_total else 0
             print(f"  {tokens:>7,} tok  ({bar_pct:4.1f}%)  {name}  [{chars:,} chars]")
         print()
@@ -517,16 +587,18 @@ def main():
 
     # Top offenders across all sections
     print("Top 10 heaviest items overall:")
-    for section, name, tokens, chars in sorted(rows, key=lambda r: -r[2])[:10]:
+    for section, name, tokens, chars, preview in sorted(rows, key=lambda r: -r[2])[:10]:
         print(f"  {tokens:>7,} tok  [{section}] {name}")
 
     # --- suggested fixes ---
+    extra_md = []  # markdown lines for SUGGESTED FIXES / MCP SERVERS / SKILLS, mirrored into the .md report
+
     tool_rows = sorted(by_section.get("tools", []), key=lambda e: -e[1])
     # Heaviest, discretionary tools worth flagging: >1% of grand total each,
     # excluding core tools whose removal would cripple normal operation.
-    heavy_tools = [(name, tokens) for name, tokens, _ in tool_rows
+    heavy_tools = [(name, tokens) for name, tokens, _, _ in tool_rows
                    if grand_total and tokens / grand_total > 0.01 and name not in CORE_TOOLS]
-    skipped_core = [(name, tokens) for name, tokens, _ in tool_rows
+    skipped_core = [(name, tokens) for name, tokens, _, _ in tool_rows
                     if grand_total and tokens / grand_total > 0.01 and name in CORE_TOOLS]
 
     if heavy_tools:
@@ -538,6 +610,9 @@ def main():
               "the tool's schema from the request entirely (not just blocks its use\n"
               "at call time) — real token savings, verified by diffing probe requests\n"
               "with/without the deny rule.\n")
+
+        extra_md.append("## SUGGESTED FIXES (tools contributing >1% of total each)")
+        extra_md.append("")
 
         heavy_names = [n for n, _ in heavy_tools]
         verified_removed = verify_deny_saves_tokens(heavy_names)
@@ -566,36 +641,52 @@ def main():
 
             print(f"  {name} — {tokens:,} tok ({pct:.1f}%){status}")
             print(f"      usage: {usage_note}")
+            extra_md.append(f"- **{name}** — {tokens:,} tok ({pct:.1f}%){status} — {usage_note}")
             if hint:
                 for h in hint:
                     print(f"      -> {h}")
+                    extra_md.append(f"  - fix: {h}")
             else:
                 print(f'      -> add "{name}" to permissions.deny in settings.json:')
                 print(f'         {{"permissions": {{"deny": ["{name}"]}}}}')
+                extra_md.append(f'  - fix: add `"{name}"` to `permissions.deny` in settings.json')
             print()
 
         if never_used:
+            never_used_tokens = sum(t for n, t in heavy_tools if n in never_used)
             print(f"Safe-to-disable now (never used in local history) — "
-                  f"{sum(t for n, t in heavy_tools if n in never_used):,} tok saved:")
+                  f"{never_used_tokens:,} tok saved:")
             print(json.dumps({"permissions": {"deny": never_used}}, indent=2))
             print()
+            extra_md.append("")
+            extra_md.append(f"**Safe-to-disable now (never used locally)** — {never_used_tokens:,} tok saved:")
+            extra_md.append("```json")
+            extra_md.append(json.dumps({"permissions": {"deny": never_used}}, indent=2))
+            extra_md.append("```")
         if recently_used:
             print(f"Used recently — confirm you don't need these before disabling: "
                   f"{', '.join(recently_used)}")
+            extra_md.append("")
+            extra_md.append(f"**Used recently — confirm before disabling:** {', '.join(recently_used)}")
     else:
         print("\nNo discretionary tool exceeds 1% of total tokens — no specific fix to suggest.")
         print("Scanning session history for MCP/skill usage anyway...", file=sys.stderr)
         tool_usage, skill_usage, mcp_usage = scan_tool_usage_history()
+        extra_md.append("## SUGGESTED FIXES")
+        extra_md.append("")
+        extra_md.append("No discretionary tool exceeds 1% of total tokens — no specific fix to suggest.")
 
     if skipped_core:
         print(f"\n(Not suggesting: {', '.join(n for n, _ in skipped_core)} — core tools, "
               f"disabling these would break normal operation, not just save tokens.)")
+        extra_md.append("")
+        extra_md.append(f"_(Not suggesting: {', '.join(n for n, _ in skipped_core)} — core tools.)_")
 
     # --- MCP servers by usage recency (independent of the >1%-of-total cut,
     # since a whole server may be cheap individually but still dead weight) ---
     catalog_rows = by_section.get("catalog", [])
-    mcp_rows = [(name[4:], tokens) for name, tokens, _ in catalog_rows if name.startswith("mcp:")]
-    skill_rows = [(name[6:], tokens) for name, tokens, _ in catalog_rows if name.startswith("skill:")]
+    mcp_rows = [(name[4:], tokens) for name, tokens, _, _ in catalog_rows if name.startswith("mcp:")]
+    skill_rows = [(name[6:], tokens) for name, tokens, _, _ in catalog_rows if name.startswith("skill:")]
 
     enabled_plugins = load_enabled_plugins()
 
@@ -603,29 +694,48 @@ def main():
         print(f"\n{'='*72}")
         print("MCP SERVERS — token cost vs. last-used")
         print(f"{'='*72}\n")
+        extra_md.append("")
+        extra_md.append("## MCP SERVERS — token cost vs. last-used")
+        extra_md.append("")
+        extra_md.append("| Server | Tokens | Usage | Fix |")
+        extra_md.append("|---|---|---|---|")
         for server_name, tokens in sorted(mcp_rows, key=lambda e: -e[1]):
             short = server_name.split(":")[-1] if ":" in server_name else server_name
             count, last_ts = mcp_usage.get(short, (0, None))
             label = usage_bucket_label(count, last_ts)
             plugin_key = guess_plugin_key(server_name, enabled_plugins)
             print(f"  {server_name} — {tokens:,} tok — {label}")
+            fix = ""
             if count == 0:
                 fix = f'disable plugin "{plugin_key}"' if plugin_key else "disable the plugin/MCP server providing this"
                 print(f"      -> {fix} in settings.json enabledPlugins, or `/mcp` to manage it")
+            extra_md.append(f"| {md_escape(server_name)} | {tokens:,} | {md_escape(label)} | {md_escape(fix)} |")
         print()
 
     if skill_rows:
         print(f"\n{'='*72}")
         print("SKILLS — token cost vs. last-invoked")
         print(f"{'='*72}\n")
+        extra_md.append("")
+        extra_md.append("## SKILLS — token cost vs. last-invoked")
+        extra_md.append("")
+        extra_md.append("| Skill | Tokens | Usage |")
+        extra_md.append("|---|---|---|")
         for skill_name, tokens in sorted(skill_rows, key=lambda e: -e[1]):
             count, last_ts = skill_usage.get(skill_name, (0, None))
             label = usage_bucket_label(count, last_ts)
             print(f"  {skill_name} — {tokens:,} tok — {label}")
+            extra_md.append(f"| {md_escape(skill_name)} | {tokens:,} | {md_escape(label)} |")
         print("\n(Skills only cost tokens for their one-line catalog entry above "
               "unless invoked — the full SKILL.md loads on demand. Removing an "
               "unused skill from a plugin's skills/ dir, or disabling the plugin "
               "entirely, saves that one line's tokens per request.)")
+        extra_md.append("")
+        extra_md.append("_(Skills only cost tokens for their one-line catalog entry unless "
+                         "invoked — the full SKILL.md loads on demand.)_")
+
+    out_path = write_markdown_report(data, by_section, grand_total, extra_md)
+    print(f"\nFull overview written to: {out_path}")
 
 
 if __name__ == "__main__":

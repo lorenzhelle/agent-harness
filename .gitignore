@@ -1,5 +1,8 @@
 **/ai-briefing/output/*
 !**/ai-briefing/output/.gitkeep
 **/ai-briefing/state.json
+**/token-audit/output/*
+!**/token-audit/output/.gitkeep
 .env
 *.pyc
+__pycache__/
