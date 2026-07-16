@@ -64,15 +64,26 @@ working on or around this skill:
 
 A breakdown into four sections, each sorted heaviest-first:
 
-- **system** — the base agent system prompt (harness instructions +
-  CLAUDE.md + memory + environment block), billing/attribution header, SDK
-  identity line
+- **system** — the base agent system prompt is never counted as one lump
+  sum: it's split on its own top-level `# Header` lines into one row per
+  section — typically **Harness**, **Session-specific guidance**,
+  **Memory**, **Environment**, **Context management**, plus a leading
+  **preamble** row for anything before the first header (the "you are an
+  interactive agent..." identity line). Also reported separately: the
+  billing/attribution header and the SDK identity line (each their own
+  system block, not part of the main prompt). This is what lets you see,
+  e.g., "Memory is 500 tokens because of an oversized memory file" instead
+  of just "system is 1,450 tokens."
 - **tools** — every tool and MCP tool schema individually, by name. This is
   usually the biggest chunk — each enabled plugin/MCP server adds its full
   tool schema to every request regardless of whether it's used that turn.
-- **messages** — the actual conversation turn only (the user prompt +
-  system-reminder wrapper); the catalog reminder below is split out
-  separately so it doesn't get counted as one opaque blob.
+- **messages** — same per-header splitting applied to the conversation
+  turn: the `<system-reminder>` wrapper Claude Code prepends to the first
+  user message (memory recall, CLAUDE.md/RTK.md contents, `currentDate`,
+  etc.) is split into one row per top-level header inside it, plus a
+  separate row for the actual user-typed text. The mid-conversation agent
+  catalog reminder is split out separately (see **catalog** below) so it
+  doesn't get counted as one opaque blob either.
 - **catalog** — the mid-conversation "Available agent types..."
   system-reminder Claude Code injects whenever the Agent tool is present,
   broken into its three independently-toggleable parts: the fixed
@@ -80,6 +91,13 @@ A breakdown into four sections, each sorted heaviest-first:
   instructions block), and **one row per registered skill** (its one-line
   catalog entry — name + description). This split is what makes the MCP
   SERVERS and SKILLS sections below possible.
+
+All of this splitting (system prompt, system-reminder wrapper, MCP/skill
+catalog) uses the same underlying technique: find every top-level `# `/`## `
+header in a block of text and cut it into one row per section between
+headers. It's generic, so if Claude Code adds a new top-level section to
+any of these blocks in a future version, it shows up as its own row
+automatically — nothing in this skill needs updating for that.
 
 Plus a grand total, a top-10 heaviest-items list across all sections, a
 **SUGGESTED FIXES** block for heavy tools, and **MCP SERVERS** /
@@ -318,8 +336,12 @@ printed suggestions. Concretely:
   it's easy to misdiagnose as a LiteLLM/backend problem when it's actually
   local env config or org policy, so mention it even when the per-tool
   deny suggestions already look sufficient.
-- If **system** is large: check for CLAUDE.md bloat or oversized memory
-  files (`~/.claude/projects/*/memory/`).
+- If **system** is large: check which specific sub-row is driving it rather
+  than treating "system" as one thing — a heavy `system: Memory` row points
+  at oversized memory files (`~/.claude/projects/*/memory/`), a heavy
+  `system: Harness` or `system: preamble` row is fixed Claude Code overhead
+  (not user-controllable), and a heavy `message[N]: system-reminder:
+  claudeMd` row (in MESSAGES) points at CLAUDE.md bloat specifically.
 - If a specific **catalog** entry stands out: the agent-types prose row is
   fixed overhead from having the Agent tool enabled at all — not
   per-message trimmable. But a heavy `mcp:*` or `skill:*` row IS

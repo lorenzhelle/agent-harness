@@ -178,6 +178,34 @@ def classify_system_block(idx, text):
     return f"system block #{idx}"
 
 
+def split_by_h1_headers(text, label_prefix):
+    """Split a block of text into (label, chunk) pairs on top-level markdown
+    `# Header` lines, keeping any leading preamble before the first header as
+    its own row. This is what turns opaque multi-thousand-char blobs (the
+    base system prompt, the mid-conversation system-reminder wrapper) into
+    per-section rows so e.g. "Harness" vs. "Memory" vs. "Environment" each
+    get their own token count instead of one lump sum.
+
+    Falls back to a single (label_prefix, text) row if there are no H1
+    headers to split on (e.g. a plain user message) or fewer than 2 (nothing
+    meaningful to break apart), so callers don't have to special-case that.
+    """
+    headers = list(re.finditer(r"(?m)^# (.+)$", text))
+    if len(headers) < 2:
+        return [(label_prefix, text)]
+    out = []
+    if headers[0].start() > 0:
+        preamble = text[:headers[0].start()]
+        if preamble.strip():
+            out.append((f"{label_prefix}: preamble", preamble))
+    for i, m in enumerate(headers):
+        name = m.group(1).strip()
+        start = m.start()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        out.append((f"{label_prefix}: {name}", text[start:end]))
+    return out
+
+
 def classify_message(i, msg):
     role = msg.get("role")
     content = msg.get("content")
@@ -447,6 +475,31 @@ def text_of_message(msg):
     return ""
 
 
+SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>(.*?)</system-reminder>", re.DOTALL)
+
+
+def split_user_turn_message(i, msg):
+    """Split a user-turn message into its constituent parts instead of one
+    opaque row: the <system-reminder> wrapper (itself broken into its
+    top-level `# Header` sections — memory recall, CLAUDE.md contents,
+    currentDate, etc. each get their own row) plus the actual user-typed
+    text as its own separate row. Falls back to a single whole-message row
+    if there's no <system-reminder> block to split out (e.g. a later turn
+    in the conversation with no reminder attached)."""
+    text = text_of_message(msg)
+    m = SYSTEM_REMINDER_RE.search(text)
+    if not m:
+        return None
+    reminder_body = m.group(1)
+    remainder = (text[:m.start()] + text[m.end():]).strip()
+    out = []
+    for sub_label, sub_text in split_by_h1_headers(reminder_body, f"message[{i}]: system-reminder"):
+        out.append((sub_label, sub_text))
+    if remainder:
+        out.append((f"message[{i}] ({msg.get('role')}): user turn text", remainder))
+    return out
+
+
 def md_escape(text):
     """Escape a preview string so it's safe inside a markdown table cell."""
     return text.replace("|", "\\|").replace("\n", " ")
@@ -509,9 +562,18 @@ def main():
     rows = []  # (section, subsection, tokens, chars, preview)
 
     # --- system blocks ---
+    # The base agent system prompt is one multi-thousand-char blob (harness
+    # instructions + CLAUDE.md + memory + environment block, all
+    # concatenated) — split it on its own top-level `# Header` lines so
+    # "Harness" vs. "Memory" vs. "Environment" etc. each get their own row
+    # and token count instead of one opaque lump sum.
     for i, (label, text) in enumerate(extract_system_blocks(data.get("system"))):
         name = classify_system_block(i, text)
-        rows.append(("system", name, count_text(text), len(text), preview_text(text)))
+        if name.startswith("base agent system prompt"):
+            for sub_label, sub_text in split_by_h1_headers(text, "system"):
+                rows.append(("system", sub_label, count_text(sub_text), len(sub_text), preview_text(sub_text)))
+        else:
+            rows.append(("system", name, count_text(text), len(text), preview_text(text)))
 
     # --- tools ---
     tools = data.get("tools", [])
@@ -536,9 +598,18 @@ def main():
         content = msg.get("content")
         if isinstance(content, str) and content == catalog_text:
             continue  # handled below as its own section
-        label = classify_message(i, msg)
-        text = text_of_message(msg)
-        rows.append(("messages", label, count_text(text), len(text), preview_text(text)))
+        # The <system-reminder> wrapper bundles several independently-sized
+        # things (memory recall, CLAUDE.md contents, currentDate, ...) — same
+        # opaque-blob problem as the base system prompt, so split it the
+        # same way instead of one lump "system-reminder wrapper" row.
+        split = split_user_turn_message(i, msg)
+        if split:
+            for sub_label, sub_text in split:
+                rows.append(("messages", sub_label, count_text(sub_text), len(sub_text), preview_text(sub_text)))
+        else:
+            label = classify_message(i, msg)
+            text = text_of_message(msg)
+            rows.append(("messages", label, count_text(text), len(text), preview_text(text)))
 
     if catalog_text:
         prose = agent_catalog_prose(catalog_text)
