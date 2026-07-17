@@ -40,8 +40,10 @@ another ~15-30s if any heavy discretionary tools are found, since the
 script fires a second verification probe to confirm they're actually
 removable via `permissions.deny` before suggesting it.
 
-The script sets `PYTHONUNBUFFERED=1` via its shebang so output lines
-appear live — no end-of-run buffering when run as a background task.
+**Run this with the Bash tool directly — not as a background task and not
+with Monitor.** The script sets `PYTHONUNBUFFERED=1` in its shebang so
+stdout lines appear live in the Bash tool output. A background task +
+Monitor adds no value here and causes duplicate/lost output.
 
 **Handling the API key/token — never expose the value, only check presence.**
 `analyze.py` itself never prints or logs the key: it's read once from the
