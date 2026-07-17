@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --script
+#!/usr/bin/env -S PYTHONUNBUFFERED=1 uv run --script
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["requests"]
@@ -652,6 +652,9 @@ def main():
 
     print(f"{'='*72}")
     print(f"TOTAL INPUT TOKENS (exact, via tokenizer): {grand_total:,}")
+    print(f"  (cold/uncached — what you'd pay on a fresh session's first turn;")
+    print(f"   live `claude -p` context-window % may show MORE because it counts")
+    print(f"   cache-read tokens too, which aren't billed at the same rate.)")
     if data.get("thinking"):
         print(f"thinking config: {data['thinking']}")
     print(f"{'='*72}\n")
@@ -780,6 +783,24 @@ def main():
             if count == 0:
                 fix = f'disable plugin "{plugin_key}"' if plugin_key else "disable the plugin/MCP server providing this"
                 print(f"      -> {fix} in settings.json enabledPlugins, or `/mcp` to manage it")
+            else:
+                # Server is actively used — check if any of its individual tools
+                # are never called (partial disable via per-tool permissions.deny).
+                server_prefix = f"mcp__{short}__"
+                server_tools_in_request = [
+                    t.get("name") for t in data.get("tools", [])
+                    if (t.get("name") or "").startswith(server_prefix)
+                ]
+                never_called_tools = [
+                    t for t in server_tools_in_request
+                    if tool_usage.get(t, (0, None))[0] == 0
+                ]
+                if never_called_tools:
+                    print(f"      Server is used — but these specific tools are never called "
+                          f"and could be denied individually:")
+                    for nt in never_called_tools:
+                        print(f"        -> add \"{nt}\" to permissions.deny")
+                    fix = f"server used; consider per-tool deny for: {', '.join(never_called_tools)}"
             extra_md.append(f"| {md_escape(server_name)} | {tokens:,} | {md_escape(label)} | {md_escape(fix)} |")
         print()
 
@@ -804,6 +825,61 @@ def main():
         extra_md.append("")
         extra_md.append("_(Skills only cost tokens for their one-line catalog entry unless "
                          "invoked — the full SKILL.md loads on demand.)_")
+
+    # --- tool search status ---
+    print(f"\n{'='*72}")
+    print("TOOL SEARCH STATUS")
+    print(f"{'='*72}\n")
+    ts_md = ["## TOOL SEARCH STATUS", ""]
+
+    disable_betas = os.environ.get("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "")
+    betas_blocking = disable_betas.strip().lower() not in ("", "0", "false")
+
+    settings_paths = [
+        os.path.expanduser("~/.claude/settings.json"),
+        os.path.expanduser("~/.claude/settings.local.json"),
+    ]
+    tool_search_enabled = False
+    for sp in settings_paths:
+        if os.path.exists(sp):
+            try:
+                d = json.load(open(sp))
+                if d.get("ENABLE_TOOL_SEARCH") or d.get("env", {}).get("ENABLE_TOOL_SEARCH"):
+                    tool_search_enabled = True
+            except Exception:
+                pass
+
+    tool_search_tool_present = any(
+        t.get("name") == "ToolSearch" or t.get("name") == "ToolSearchTool"
+        for t in data.get("tools", [])
+    )
+
+    if betas_blocking:
+        status = "BLOCKED"
+        detail = (f"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS={disable_betas!r} "
+                  f"overrides ENABLE_TOOL_SEARCH — tool search silently disabled "
+                  f"regardless of settings.json. Unset or set to '0'/'false' to re-enable.")
+    elif not tool_search_enabled:
+        status = "NOT CONFIGURED"
+        detail = "ENABLE_TOOL_SEARCH not found in settings.json. Add it to cut TOOLS section dramatically."
+    elif tool_search_tool_present:
+        status = "ENABLED (ToolSearchTool present in request)"
+        detail = "Tool search active — the TOOLS section above reflects reduced per-turn schema cost."
+    else:
+        status = "CONFIGURED but ToolSearchTool absent from request"
+        detail = ("ENABLE_TOOL_SEARCH set but ToolSearchTool not in probe request's tool list. "
+                  "Likely blocked by org-managed policy (managed-settings.json / feature gate). "
+                  "Not fixable locally — flag to whoever manages the deployment.")
+
+    print(f"  Status: {status}")
+    print(f"  {detail}")
+    print()
+    ts_md.append(f"**Status: {status}**  ")
+    ts_md.append(detail)
+    ts_md.append("")
+    ts_md.append("Tool search is the single biggest lever — it sends only relevant tool schemas per turn")
+    ts_md.append("instead of all schemas on every request. If TOOLS dominates, fix this before per-tool deny rules.")
+    extra_md += ts_md
 
     out_path = write_markdown_report(data, by_section, grand_total, extra_md)
     print(f"\nFull overview written to: {out_path}")

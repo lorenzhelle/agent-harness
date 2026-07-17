@@ -40,6 +40,9 @@ another ~15-30s if any heavy discretionary tools are found, since the
 script fires a second verification probe to confirm they're actually
 removable via `permissions.deny` before suggesting it.
 
+The script sets `PYTHONUNBUFFERED=1` via its shebang so output lines
+appear live — no end-of-run buffering when run as a background task.
+
 **Handling the API key/token — never expose the value, only check presence.**
 `analyze.py` itself never prints or logs the key: it's read once from the
 environment and used only inside the `x-api-key` HTTP header sent directly
@@ -99,11 +102,24 @@ headers. It's generic, so if Claude Code adds a new top-level section to
 any of these blocks in a future version, it shows up as its own row
 automatically — nothing in this skill needs updating for that.
 
-Plus a grand total, a top-10 heaviest-items list across all sections, a
-**SUGGESTED FIXES** block for heavy tools, and **MCP SERVERS** /
-**SKILLS** sections (see below) that check *every* connected server and
-registered skill against usage history regardless of how small its
-individual token cost is.
+Plus a grand total (with an inline note explaining the cold/uncached
+vs. live context-window number distinction — see "Two totals" below),
+a top-10 heaviest-items list across all sections, a **SUGGESTED FIXES**
+block for heavy tools, **MCP SERVERS** / **SKILLS** sections (see below),
+and a **TOOL SEARCH STATUS** block.
+
+## Two totals — why the script's "Grand total" differs from live context-window %
+
+The script's **TOTAL INPUT TOKENS** line counts a *cold, uncached* probe
+request — every token priced at full input rate, no cache read. This is
+the right number for "what does my setup cost per fresh session."
+
+The live `claude -p` context-window percentage (and the Monitor event line
+"Grand total: N tokens") can show a *larger* number because it includes
+**cache-read tokens**, which count toward the context window but are billed
+at a much lower rate. These are not the same metric. The script prints an
+inline note below its grand total explaining this so you don't have to
+look it up when the numbers don't match.
 
 ## Full overview file — every message/part sent in the probe request
 
@@ -298,6 +314,33 @@ above, (2) is `ToolSearchTool` actually available or blocked by org policy.
 Tool search fixes the shape of the whole problem rather than trimming it
 tool-by-tool, so surface it as a complementary option alongside the deny
 suggestions, not a gate before them.
+
+## TOOL SEARCH STATUS block (end of report)
+
+The script now emits a **TOOL SEARCH STATUS** block at the end of every
+run with one of four outcomes:
+
+- **BLOCKED** — `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` is set truthy;
+  tool search silently disabled regardless of settings. Fix: unset or set
+  to `0`/`false`.
+- **NOT CONFIGURED** — `ENABLE_TOOL_SEARCH` not found in any settings.json.
+  Fix: add it.
+- **ENABLED (ToolSearchTool present in request)** — working correctly; the
+  TOOLS section above reflects the reduced per-turn schema cost.
+- **CONFIGURED but ToolSearchTool absent** — likely org-managed policy
+  blocking it; not fixable locally.
+
+Surface this block to the user whenever TOOLS dominates. It's a bigger
+lever than any per-tool deny rule.
+
+## MCP SERVERS — active server, inactive specific tools
+
+When a server is actively used (non-zero calls in history), the script now
+checks whether any of that server's *individual tools* are never called and
+flags them for per-tool `permissions.deny`. This is the right level of
+granularity for servers like Atlassian where you may use Jira daily but
+never use `createConfluenceInlineComment` or `createConfluencePage` etc.
+The output prints each never-called tool with a ready-to-copy deny hint.
 
 ## Required final step: your own recommendation
 
