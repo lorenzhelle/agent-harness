@@ -286,7 +286,7 @@ note to stderr when this fallback is active.
 The `TOOLS` section (usually the single biggest chunk, 60-85% of total) is
 only this large because every tool's *full* schema is sent on *every*
 request. Claude Code has an experimental **tool search** mode
-(`ENABLE_TOOL_SEARCH` in settings.json) meant to cut this dramatically by
+(`ENABLE_TOOL_SEARCH` — must be set in the `env` block of settings.json, **not** as a top-level key; a top-level `ENABLE_TOOL_SEARCH` is rejected by the schema validator and silently ignored) meant to cut this dramatically by
 letting the model search for relevant tools on demand instead of always
 paying the full-schema cost — so before recommending per-tool
 `permissions.deny` rules, check whether tool search is actually active,
@@ -305,17 +305,26 @@ Claude Code client behavior:
   env | grep CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
   ```
   If set truthy and you want tool search, unset it or set it to `0`/`false`.
+- **`ENABLE_TOOL_SEARCH` must be in the `env` block**, not top-level:
+  ```json
+  { "env": { "ENABLE_TOOL_SEARCH": "true" } }
+  ```
+  A top-level `"ENABLE_TOOL_SEARCH": true` fails schema validation and is
+  silently ignored — Claude Code never sees it. Confirmed empirically
+  (2026-07): attempting to add it top-level raises
+  `"Unrecognized field: ENABLE_TOOL_SEARCH"` from the settings validator,
+  and the setting has no effect even if the validator is bypassed.
 - Even with that env var unset, `ToolSearchTool` itself can be **disallowed
   at an org-managed policy level** (a `managed-settings.json` /
   growthbook/statsig feature-gate layer above `~/.claude` config) — the
   same mechanism that can org-wide-disable Fast mode. When this is the
-  cause, `ENABLE_TOOL_SEARCH=true` in the user's own settings.json is a
-  no-op: nothing fixable locally in `settings.json` or `.claude.json`, it
-  needs to be enabled at the org/managed-policy level. If tool search stays
-  off despite `ENABLE_TOOL_SEARCH=true` being read correctly and the env
-  var above being unset, say this plainly rather than suggesting more local
-  settings tweaks — flag it as an org-policy question for whoever manages
-  the deployment.
+  cause, `ENABLE_TOOL_SEARCH=true` in the user's own settings.json `env`
+  block is a no-op: nothing fixable locally in `settings.json` or
+  `.claude.json`, it needs to be enabled at the org/managed-policy level.
+  If tool search stays off despite `ENABLE_TOOL_SEARCH=true` being set in
+  `env` correctly and the env var above being unset, say this plainly
+  rather than suggesting more local settings tweaks — flag it as an
+  org-policy question for whoever manages the deployment.
 - Real-world effect observed: fixing the env var alone took one session
   from a much higher context size down to 21,601 tokens (11% of context
   window) for a bare "hey" — still high, because **most of that remainder
@@ -342,12 +351,19 @@ run with one of four outcomes:
 - **BLOCKED** — `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` is set truthy;
   tool search silently disabled regardless of settings. Fix: unset or set
   to `0`/`false`.
-- **NOT CONFIGURED** — `ENABLE_TOOL_SEARCH` not found in any settings.json.
-  Fix: add it.
+- **NOT CONFIGURED** — `ENABLE_TOOL_SEARCH` not found in any settings.json
+  (neither top-level nor in the `env` block). Fix: add `"ENABLE_TOOL_SEARCH":
+  "true"` to the `env` block.
+- **MISCONFIGURED (top-level)** — `ENABLE_TOOL_SEARCH` found as a top-level
+  settings.json key, not inside `env`. Schema validator rejects it; Claude
+  Code silently ignores it. Fix: move it into `"env": { "ENABLE_TOOL_SEARCH":
+  "true" }`.
 - **ENABLED (ToolSearchTool present in request)** — working correctly; the
   TOOLS section above reflects the reduced per-turn schema cost.
-- **CONFIGURED but ToolSearchTool absent** — likely org-managed policy
-  blocking it; not fixable locally.
+- **CONFIGURED but ToolSearchTool absent** — `ENABLE_TOOL_SEARCH=true` is set
+  correctly in `env`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` is not truthy,
+  but `ToolSearchTool` still didn't appear. Likely org-managed policy blocking
+  it; not fixable locally.
 
 Surface this block to the user whenever TOOLS dominates. It's a bigger
 lever than any per-tool deny rule.

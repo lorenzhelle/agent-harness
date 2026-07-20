@@ -876,14 +876,22 @@ def main():
         os.path.expanduser("~/.claude/settings.local.json"),
     ]
     tool_search_enabled = False
+    tool_search_toplevel_only = False  # set in wrong location (top-level instead of env block)
     for sp in settings_paths:
         if os.path.exists(sp):
             try:
                 d = json.load(open(sp))
-                if d.get("ENABLE_TOOL_SEARCH") or d.get("env", {}).get("ENABLE_TOOL_SEARCH"):
+                in_env = bool(d.get("env", {}).get("ENABLE_TOOL_SEARCH"))
+                at_toplevel = bool(d.get("ENABLE_TOOL_SEARCH"))
+                if in_env:
                     tool_search_enabled = True
+                    tool_search_toplevel_only = False
+                elif at_toplevel and not tool_search_enabled:
+                    tool_search_toplevel_only = True
             except Exception:
                 pass
+    if tool_search_toplevel_only:
+        tool_search_enabled = True  # "found" but in wrong place
 
     tool_search_tool_present = any(
         t.get("name") == "ToolSearch" or t.get("name") == "ToolSearchTool"
@@ -897,15 +905,22 @@ def main():
                   f"regardless of settings.json. Unset or set to '0'/'false' to re-enable.")
     elif not tool_search_enabled:
         status = "NOT CONFIGURED"
-        detail = "ENABLE_TOOL_SEARCH not found in settings.json. Add it to cut TOOLS section dramatically."
+        detail = ('ENABLE_TOOL_SEARCH not found in settings.json. '
+                  'Add it to the env block: {"env": {"ENABLE_TOOL_SEARCH": "true"}}')
+    elif tool_search_toplevel_only:
+        status = "MISCONFIGURED (top-level key, not in env block)"
+        detail = ('ENABLE_TOOL_SEARCH is set as a top-level settings.json key — '
+                  'schema validator rejects it and Claude Code silently ignores it. '
+                  'Move it inside the env block: {"env": {"ENABLE_TOOL_SEARCH": "true"}}')
     elif tool_search_tool_present:
         status = "ENABLED (ToolSearchTool present in request)"
         detail = "Tool search active — the TOOLS section above reflects reduced per-turn schema cost."
     else:
         status = "CONFIGURED but ToolSearchTool absent from request"
-        detail = ("ENABLE_TOOL_SEARCH set but ToolSearchTool not in probe request's tool list. "
-                  "Likely blocked by org-managed policy (managed-settings.json / feature gate). "
-                  "Not fixable locally — flag to whoever manages the deployment.")
+        detail = ("ENABLE_TOOL_SEARCH set correctly in env block but ToolSearchTool not in probe "
+                  "request's tool list. Likely blocked by org-managed policy "
+                  "(managed-settings.json / feature gate). Not fixable locally — flag to whoever "
+                  "manages the deployment.")
 
     print(f"  Status: {status}")
     print(f"  {detail}")
