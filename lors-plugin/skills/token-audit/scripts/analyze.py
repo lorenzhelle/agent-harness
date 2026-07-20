@@ -336,7 +336,28 @@ KNOWN_DISABLE_HINTS = {
         "env var CLAUDE_CODE_DISABLE_WORKFLOWS=1",
         '/config → toggle "Dynamic workflows" off',
     ],
+    "Artifact": [
+        '"disableArtifact": true in settings.json',
+        "env var CLAUDE_CODE_DISABLE_ARTIFACT=1",
+    ],
 }
+
+# Confirmed via code.claude.com/docs/en/settings (2026-07). Bundled-skills and
+# claude.ai-connector disables aren't single-tool hints (they remove whole
+# catalog groups, not one named tool), so they're surfaced separately in the
+# SKILLS / MCP SERVERS sections rather than through disable_hint_for_tool().
+DISABLE_BUNDLED_SKILLS_HINT = (
+    '"disableBundledSkills": true in settings.json (or '
+    "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1) — removes all of Anthropic's "
+    "bundled skills/workflows at once, keeps their slash commands typable. "
+    "Does NOT remove plugin skills or .claude/skills/."
+)
+DISABLE_CLAUDE_AI_CONNECTORS_HINT = (
+    '"disableClaudeAiConnectors": true in settings.json — stops claude.ai '
+    "MCP connectors (e.g. Gmail, Google Calendar/Drive, Notion, TickTick "
+    "under mcp__claude_ai_*) from being auto-fetched/connected. Servers "
+    "passed explicitly via --mcp-config are unaffected."
+)
 
 MCP_TOOL_RE = re.compile(r"^mcp__(.+?)__(.+)$")
 
@@ -783,6 +804,10 @@ def main():
             if count == 0:
                 fix = f'disable plugin "{plugin_key}"' if plugin_key else "disable the plugin/MCP server providing this"
                 print(f"      -> {fix} in settings.json enabledPlugins, or `/mcp` to manage it")
+                if short.startswith("claude_ai_") or server_name.startswith("claude_ai_"):
+                    print(f"      -> or blanket-disable all claude.ai connectors at once: "
+                          f"{DISABLE_CLAUDE_AI_CONNECTORS_HINT}")
+                    fix += f"; {DISABLE_CLAUDE_AI_CONNECTORS_HINT}"
             else:
                 # Server is actively used — check if any of its individual tools
                 # are never called (partial disable via per-tool permissions.deny).
@@ -825,6 +850,17 @@ def main():
         extra_md.append("")
         extra_md.append("_(Skills only cost tokens for their one-line catalog entry unless "
                          "invoked — the full SKILL.md loads on demand.)_")
+
+        never_used_skills = [s for s, t in skill_rows if skill_usage.get(s, (0, None))[0] == 0]
+        if len(never_used_skills) >= 2:
+            print(f"\n  {len(never_used_skills)} skills never invoked locally: "
+                  f"{', '.join(never_used_skills)}")
+            print(f"  If most of these are Anthropic's bundled skills (dataviz, review, init, "
+                  f"etc.), a single flag cuts all of them at once: {DISABLE_BUNDLED_SKILLS_HINT}")
+            extra_md.append("")
+            extra_md.append(f"**{len(never_used_skills)} skills never invoked:** "
+                             f"{', '.join(md_escape(s) for s in never_used_skills)}  ")
+            extra_md.append(DISABLE_BUNDLED_SKILLS_HINT)
 
     # --- tool search status ---
     print(f"\n{'='*72}")

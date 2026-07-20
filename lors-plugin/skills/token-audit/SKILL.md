@@ -175,11 +175,28 @@ Specific known mechanisms beyond generic deny:
   `"disableWorkflows": true` in settings.json, `CLAUDE_CODE_DISABLE_WORKFLOWS=1`
   env var, or `/config` → "Dynamic workflows" toggle — any of these is
   equivalent to (and preferred over) denying it by name.
+- **`Artifact`**: disable via `"disableArtifact": true` in settings.json or
+  `CLAUDE_CODE_DISABLE_ARTIFACT=1` — removes the Artifact tool (publishing
+  session output as a private claude.ai page) entirely.
 - **MCP-namespaced tools** (`mcp__<server>__<tool>`): the fix is disabling
   the MCP server/plugin behind them (check `enabledPlugins` in
   settings.json, or run `/mcp` to identify which server owns a given tool),
   not denying each tool individually — a server usually exposes several
   tools that all disappear together once the server is off.
+  - **`mcp__claude_ai_*`** servers specifically (Gmail, Google Calendar/Drive,
+    Notion, TickTick, etc. — the claude.ai-hosted connectors) have a single
+    blanket flag beyond per-server disable: `"disableClaudeAiConnectors": true`
+    in settings.json stops all of them from being auto-fetched/connected at
+    once. Servers passed explicitly via `--mcp-config` are unaffected.
+- **Bundled skills as a group**: if several *never-used* skills in the
+  SKILLS section turn out to be Anthropic's own bundled ones (`dataviz`,
+  `review`, `init`, etc., not plugin or `.claude/skills/` skills),
+  `"disableBundledSkills": true` in settings.json (or
+  `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1`) removes the whole bundled catalog
+  in one shot while keeping their slash commands typable — cheaper than
+  fighting each one individually. Confirmed via
+  [code.claude.com/docs/en/settings](https://code.claude.com/docs/en/settings),
+  min version v2.1.169.
 - Everything else (e.g. `DesignSync`, `Cron*`, `Task*`, `EnterWorktree`/
   `ExitWorktree`, `ScheduleWakeup`, `LSP`, `ReportFindings`, `SendMessage`):
   no dedicated flag found in Claude Code's docs — bare-name
