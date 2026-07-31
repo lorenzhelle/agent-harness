@@ -195,6 +195,11 @@ Für jeden mit **h** markierten Task Kategorie bestimmen:
 Erstelle `$VAULT_DIR/Daily Notes/<heute>.md` mit den Tasks die der User mit **h** markiert hat, aufgeteilt in Sektionen:
 
 ```
+Top 3 Ziele:
+- [ ]
+- [ ]
+- [ ]
+
 Heute:
 
 ### Netlight
@@ -219,6 +224,7 @@ Heute:
 ```
 
 **Regeln:**
+- `Top 3 Ziele:` steht ganz oben in der Note, vor `Heute:`, immer mit genau 3 leeren `- [ ]` Checkboxen — wird nicht automatisch befüllt, der User trägt sie manuell ein
 - Tasks in `### Netlight`, `### Libri`, `### Allgemein` aufteilen — kein Präfix im Task-Text, Sektionsüberschrift reicht
 - Reihenfolge der Sektionen: Netlight → Libri → Allgemein
 - ⚠️-Markierung bei ≥3x verschoben kommt **nach** dem Präfix
