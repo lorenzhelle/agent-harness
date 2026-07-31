@@ -27,10 +27,11 @@ from icalendar import Calendar
 import recurring_ical_events
 
 
-VAULT_ROOT = "/mnt/c/Users/lhelle/Documents/para-vault/Daily Notes"
-ICS_URLS = [
-    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics",
-    "https://outlook.office365.com/owa/calendar/070b9b43f03648939e2577402922a5c9@netlight.com/2f09c0315ea74b729ac60711ec78a57d15135075663695882613/calendar.ics",
+VAULT_DIR = os.environ.get("VAULT_DIR", "/mnt/c/Users/lhelle/Documents/para-vault")
+VAULT_ROOT = os.path.join(VAULT_DIR, "Daily Notes")
+ICS_SOURCES = [
+    ("Libri",    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
+    ("Netlight", "https://outlook.office365.com/owa/calendar/070b9b43f03648939e2577402922a5c9@netlight.com/2f09c0315ea74b729ac60711ec78a57d15135075663695882613/calendar.ics"),
 ]
 
 # Matches: ## HH:MM-HH:MM Title  or  ## ganztägig Title
@@ -38,9 +39,11 @@ MEETING_HEADING_RE = re.compile(
     r"^## (?:(\d{2}:\d{2}(?:-\d{2}:\d{2})?|ganztägig)) (.+)$"
 )
 
+FOCUS_TITLE_RE = re.compile(r"^(🔵 Netlight Fokus|🟢 Libri Fokus|🔘 Fokus|📱 Slack Check)$")
 
-def fetch_events(ics_url: str, target_date: date) -> list[dict]:
-    response = requests.get(ics_url, timeout=30)
+
+def fetch_events(ics_url: str, target_date: date, context: str = "Libri") -> list[dict]:
+    response = requests.get(ics_url, timeout=60)
     response.raise_for_status()
 
     cal = Calendar.from_ical(response.content)
@@ -81,6 +84,7 @@ def fetch_events(ics_url: str, target_date: date) -> list[dict]:
 
         events.append({
             "summary": summary,
+            "context": context,
             "start_time": start_time,
             "end_time": end_time,
             "start_dt": start_dt,
@@ -96,7 +100,8 @@ def format_meeting_heading(event: dict) -> str:
         time_str = event["start_time"]
     else:
         time_str = "ganztägig"
-    return f"## {time_str} {event['summary']}"
+    prefix = "🔵 " if event.get("context") == "Netlight" else ""
+    return f"## {time_str} {prefix}{event['summary']}"
 
 
 def parse_meeting_blocks(lines: list[str]) -> list[dict]:
@@ -177,24 +182,65 @@ def refetch_meetings(note_path: str, events: list[dict]) -> None:
             if body:
                 existing_notes[block["title"]] = body
 
-    # Build new meetings section using fresh calendar events
+    # Extract focus blocks from existing note (not in ICS, must be preserved)
+    focus_blocks: list[dict] = []
+    for block in existing_blocks:
+        if block["type"] == "meeting" and block["title"] and FOCUS_TITLE_RE.match(block["title"]):
+            # Parse start time from heading for sort key
+            m = MEETING_HEADING_RE.match(block["heading"])
+            time_str = m.group(1) if m else "99:99"
+            start_str = time_str.split("-")[0] if "-" in time_str else time_str
+            focus_blocks.append({
+                "sort_key": start_str,
+                "heading": block["heading"],
+                "title": block["title"],
+                "body_lines": block["body_lines"],
+            })
+
+    # Build combined list: calendar events + focus blocks, sorted by start time
+    def event_sort_key(e: dict) -> str:
+        return e["start_time"] or "99:99"
+
+    all_entries = [
+        {"sort_key": event_sort_key(e), "type": "calendar", "event": e}
+        for e in events
+    ] + [
+        {"sort_key": fb["sort_key"], "type": "focus", "block": fb}
+        for fb in focus_blocks
+    ]
+    all_entries.sort(key=lambda x: x["sort_key"])
+
+    # Build new meetings section
     new_meetings_lines = []
-    for event in events:
-        heading = format_meeting_heading(event)
-        new_meetings_lines.append(heading)
-        title = event["summary"]
-        if title in existing_notes:
-            new_meetings_lines.append("")
-            new_meetings_lines.extend(existing_notes[title])
-            print(f"  Notizen beibehalten: {heading}")
+    for entry in all_entries:
+        if entry["type"] == "calendar":
+            event = entry["event"]
+            heading = format_meeting_heading(event)
+            new_meetings_lines.append(heading)
+            title = event["summary"]
+            if title in existing_notes:
+                new_meetings_lines.append("")
+                new_meetings_lines.extend(existing_notes[title])
+                print(f"  Notizen beibehalten: {heading}")
+        else:
+            fb = entry["block"]
+            new_meetings_lines.append(fb["heading"])
+            body = fb["body_lines"]
+            while body and body[-1].strip() == "":
+                body = body[:-1]
+            if body:
+                new_meetings_lines.append("")
+                new_meetings_lines.extend(body)
+            print(f"  Fokusblock beibehalten: {fb['heading']}")
         new_meetings_lines.append("")  # blank line after each block
 
-    if not events:
+    if not all_entries:
         new_meetings_lines.append("*(keine Termine)*")
         new_meetings_lines.append("")
 
-    # Report meetings whose notes existed but are no longer in calendar
-    removed_titles = set(existing_notes.keys()) - {e["summary"] for e in events}
+    # Report meetings whose notes existed but are no longer in calendar (ignore focus blocks)
+    focus_titles = {fb["title"] for fb in focus_blocks}
+    removed_titles = set(existing_notes.keys()) - {e["summary"] for e in events} - focus_titles
     for title in removed_titles:
         print(f"  WARNUNG: Meeting '{title}' nicht mehr im Kalender, Notizen verworfen:")
         for line in existing_notes[title]:
@@ -242,9 +288,9 @@ def main():
     print("Lade ICS-Feeds...")
 
     events = []
-    for url in ICS_URLS:
+    for ctx, url in ICS_SOURCES:
         try:
-            events.extend(fetch_events(url, target_date))
+            events.extend(fetch_events(url, target_date, context=ctx))
         except Exception as e:
             print(f"Warnung: Kalender konnte nicht geladen werden ({url[:60]}...): {e}")
 

@@ -21,15 +21,16 @@ from icalendar import Calendar
 import recurring_ical_events
 
 
-VAULT_ROOT = "/mnt/c/Users/lhelle/Documents/para-vault/Daily Notes"
-ICS_URLS = [
-    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics",
-    "https://outlook.office365.com/owa/calendar/070b9b43f03648939e2577402922a5c9@netlight.com/2f09c0315ea74b729ac60711ec78a57d15135075663695882613/calendar.ics",
+VAULT_DIR = os.environ.get("VAULT_DIR", "/mnt/c/Users/lhelle/Documents/para-vault")
+VAULT_ROOT = os.path.join(VAULT_DIR, "Daily Notes")
+ICS_SOURCES = [
+    ("Libri",    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
+    ("Netlight", "https://outlook.office365.com/owa/calendar/070b9b43f03648939e2577402922a5c9@netlight.com/2f09c0315ea74b729ac60711ec78a57d15135075663695882613/calendar.ics"),
 ]
 
 
-def fetch_events(ics_url: str, target_date: date) -> list[dict]:
-    response = requests.get(ics_url, timeout=30)
+def fetch_events(ics_url: str, target_date: date, context: str = "Libri") -> list[dict]:
+    response = requests.get(ics_url, timeout=60)
     response.raise_for_status()
 
     cal = Calendar.from_ical(response.content)
@@ -72,6 +73,7 @@ def fetch_events(ics_url: str, target_date: date) -> list[dict]:
 
         events.append({
             "summary": summary,
+            "context": context,
             "start_time": start_time,
             "end_time": end_time,
             "start_dt": start_dt,
@@ -87,7 +89,8 @@ def format_meeting_block(event: dict) -> str:
         time_str = event["start_time"]
     else:
         time_str = "ganztägig"
-    return f"## {time_str} {event['summary']}\n"
+    prefix = "🔵 " if event.get("context") == "Netlight" else ""
+    return f"## {time_str} {prefix}{event['summary']}\n"
 
 
 def inject_into_note(note_path: str, events: list[dict], target_date: date) -> None:
@@ -137,15 +140,14 @@ def main():
         target_date = date.today()
 
     note_path = os.path.join(VAULT_ROOT, target_date.strftime("%Y-%m-%d") + ".md")
-    urls = [args.ics_url] if args.ics_url else ICS_URLS
-
     print(f"Datum: {target_date}, Note: {note_path}")
     print("Lade ICS-Feeds...")
 
+    sources = [(args.ics_url, args.ics_url)] if args.ics_url else ICS_SOURCES
     events = []
-    for url in urls:
+    for ctx, url in sources:
         try:
-            events.extend(fetch_events(url, target_date))
+            events.extend(fetch_events(url, target_date, context=ctx))
         except Exception as e:
             print(f"Warnung: Kalender konnte nicht geladen werden ({url[:60]}...): {e}")
     events.sort(key=lambda e: e["start_dt"] if isinstance(e["start_dt"], datetime) else datetime.combine(e["start_dt"], datetime.min.time()))
