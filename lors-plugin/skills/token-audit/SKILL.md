@@ -21,6 +21,14 @@ body** Claude Code sent to `ANTHROPIC_BASE_URL` (system prompt blocks, every
 tool/MCP schema, message history), then gets an exact token count for each
 section from the endpoint's own tokenizer and reports a sorted breakdown.
 
+The probe runs in the directory the script itself was invoked from (its
+`cwd`, via `os.getcwd()`), not an isolated temp dir — so it picks up that
+directory's project `CLAUDE.md`, local `.claude/settings.json`, and any
+project-scoped skills/MCP config. Run the script from whichever project you
+want audited; a run from `~` audits only global config, a run from inside a
+project directory reflects what a real session started there would actually
+send.
+
 This does NOT estimate tokens (chars/4 heuristics) — it uses the real
 tokenizer via `/v1/messages/count_tokens` on the user's own endpoint, so
 counts match what they're actually billed for.
@@ -28,8 +36,13 @@ counts match what they're actually billed for.
 ## Running it
 
 ```bash
-uv run /Users/lors/Repos/claude-plugin/lors-plugin/skills/token-audit/scripts/analyze.py
+uv run /home/lhelle/repos/personal/agent-harness/lors-plugin/skills/token-audit/scripts/analyze.py
 ```
+
+Run it with the Bash tool's cwd set to whichever directory you want audited
+(the script's `os.getcwd()` at invocation time is the probe's working
+directory — see above). The script path itself can stay absolute; only the
+Bash tool's cwd needs to match the target directory.
 
 Requires `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (or
 `ANTHROPIC_API_KEY`) in the environment — same values Claude Code itself
@@ -52,7 +65,7 @@ to the endpoint, never echoed to stdout/stderr. Keep it that way when
 working on or around this skill:
 - To confirm the credentials are set before running the audit, use:
   ```bash
-  uv run /Users/lors/Repos/claude-plugin/lors-plugin/skills/token-audit/scripts/check_env.py
+  uv run /home/lhelle/repos/personal/agent-harness/lors-plugin/skills/token-audit/scripts/check_env.py
   ```
   It only prints `set`/`unset` per variable and exits non-zero if anything
   required is missing — never the actual value. Prefer this over
@@ -67,7 +80,7 @@ working on or around this skill:
 
 ## What it reports
 
-A breakdown into four sections, each sorted heaviest-first:
+A breakdown into five sections, each sorted heaviest-first:
 
 - **system** — the base agent system prompt is never counted as one lump
   sum: it's split on its own top-level `# Header` lines into one row per
@@ -84,11 +97,24 @@ A breakdown into four sections, each sorted heaviest-first:
   tool schema to every request regardless of whether it's used that turn.
 - **messages** — same per-header splitting applied to the conversation
   turn: the `<system-reminder>` wrapper Claude Code prepends to the first
-  user message (memory recall, CLAUDE.md/RTK.md contents, `currentDate`,
-  etc.) is split into one row per top-level header inside it, plus a
-  separate row for the actual user-typed text. The mid-conversation agent
-  catalog reminder is split out separately (see **catalog** below) so it
-  doesn't get counted as one opaque blob either.
+  user message (memory recall, `currentDate`, etc.) is split into one row
+  per top-level header inside it, plus a separate row for the actual
+  user-typed text. The `claudeMd` header specifically is pulled out into its
+  own **context** section instead (see below) rather than staying one lump
+  row here. The mid-conversation agent catalog reminder is split out
+  separately too (see **catalog** below) so it doesn't get counted as one
+  opaque blob either.
+- **context** — every CLAUDE.md-family file Claude Code actually loaded for
+  this probe, one row per file (by its path), instead of one opaque
+  `claudeMd` blob. Since the probe now runs in the invoking directory (see
+  "Running it" above), this typically includes both **global** config
+  (`~/.claude/CLAUDE.md`, plus any `@`-imported file like `RTK.md`) and, when
+  run from inside a project, that **project's own `CLAUDE.md`** — each gets
+  its own row and token count, so you can see e.g. "the project CLAUDE.md
+  alone is 600 tokens" instead of folding it into a single global number.
+  Run the audit from different directories to compare a project's
+  CLAUDE.md cost against another project's, or against no project at all
+  (run from `~`).
 - **catalog** — the mid-conversation "Available agent types..."
   system-reminder Claude Code injects whenever the Agent tool is present,
   broken into its three independently-toggleable parts: the fixed
@@ -97,10 +123,11 @@ A breakdown into four sections, each sorted heaviest-first:
   catalog entry — name + description). This split is what makes the MCP
   SERVERS and SKILLS sections below possible.
 
-All of this splitting (system prompt, system-reminder wrapper, MCP/skill
-catalog) uses the same underlying technique: find every top-level `# `/`## `
-header in a block of text and cut it into one row per section between
-headers. It's generic, so if Claude Code adds a new top-level section to
+All of this splitting (system prompt, system-reminder wrapper, claudeMd
+files, MCP/skill catalog) uses the same underlying technique: find every
+top-level `# `/`## ` header (or, for claudeMd, every "Contents of `<path>`"
+marker) in a block of text and cut it into one row per section between
+markers. It's generic, so if Claude Code adds a new top-level section to
 any of these blocks in a future version, it shows up as its own row
 automatically — nothing in this skill needs updating for that.
 
@@ -416,10 +443,16 @@ printed suggestions. Concretely:
   deny suggestions already look sufficient.
 - If **system** is large: check which specific sub-row is driving it rather
   than treating "system" as one thing — a heavy `system: Memory` row points
-  at oversized memory files (`~/.claude/projects/*/memory/`), a heavy
+  at oversized memory files (`~/.claude/projects/*/memory/`), and a heavy
   `system: Harness` or `system: preamble` row is fixed Claude Code overhead
-  (not user-controllable), and a heavy `message[N]: system-reminder:
-  claudeMd` row (in MESSAGES) points at CLAUDE.md bloat specifically.
+  (not user-controllable).
+- If **context** is large: check which specific file's row is driving it —
+  a heavy global `~/.claude/CLAUDE.md` (or an `@`-imported file like
+  `RTK.md`) row is a fixed cost across every project, while a heavy
+  project-`CLAUDE.md` row is specific to whatever directory the audit was
+  run from and only trimmable in that project's own file. Since the probe's
+  cwd controls which project CLAUDE.md (if any) shows up here, re-run from a
+  different project directory to compare.
 - If a specific **catalog** entry stands out: the agent-types prose row is
   fixed overhead from having the Agent tool enabled at all — not
   per-message trimmable. But a heavy `mcp:*` or `skill:*` row IS

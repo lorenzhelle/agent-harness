@@ -14,6 +14,11 @@ schema, message history) and gets an exact token count for each section by
 routing its text through the endpoint's /v1/messages/count_tokens as a fake
 user message (see NOTE below on why not sent as system/tools directly).
 
+The probe runs in the directory this script itself was invoked from (not an
+isolated temp dir), so it picks up that directory's project CLAUDE.md, local
+settings, and project-scoped skills/MCP config — matching what a real session
+started there would actually send.
+
 NOTE on methodology: some LiteLLM-fronted backends (Vertex/Bedrock passthrough
 particularly) only tokenize the `messages` field of count_tokens requests and
 silently ignore `system` / `tools`, returning a constant. This script probes
@@ -120,14 +125,19 @@ def preview_text(text, limit=200):
 
 
 def run_probe_request():
-    """Fire `claude -p "hey"` with raw API body logging, return parsed request dict."""
+    """Fire `claude -p "hey"` with raw API body logging, return parsed request dict.
+
+    Runs in the directory this script was invoked from (not an isolated temp
+    dir), so the probe picks up that directory's project CLAUDE.md, local
+    settings, and any project-scoped skills/MCP config — matching what a real
+    session started there would actually send."""
     otel_dir = tempfile.mkdtemp(prefix="rtk-token-audit-")
-    work_dir = tempfile.mkdtemp(prefix="rtk-token-audit-work-")
+    work_dir = os.getcwd()
     env = dict(os.environ)
     env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
     env["OTEL_LOG_RAW_API_BODIES"] = f"file:{otel_dir}"
 
-    print("Firing probe request (`claude -p \"hey\"`)...", file=sys.stderr)
+    print(f"Firing probe request (`claude -p \"hey\"` in {work_dir})...", file=sys.stderr)
     try:
         subprocess.run(
             ["claude", "-p", "hey", "--model", MODEL],
@@ -151,7 +161,6 @@ def run_probe_request():
         data = json.load(f)
 
     shutil.rmtree(otel_dir, ignore_errors=True)
-    shutil.rmtree(work_dir, ignore_errors=True)
     return data
 
 
@@ -456,7 +465,7 @@ def verify_deny_saves_tokens(tool_names):
     if not tool_names:
         return None
     otel_dir = tempfile.mkdtemp(prefix="rtk-token-audit-verify-")
-    work_dir = tempfile.mkdtemp(prefix="rtk-token-audit-verify-work-")
+    work_dir = os.getcwd()
     env = dict(os.environ)
     env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
     env["OTEL_LOG_RAW_API_BODIES"] = f"file:{otel_dir}"
@@ -477,7 +486,6 @@ def verify_deny_saves_tokens(tool_names):
         return None
     finally:
         shutil.rmtree(otel_dir, ignore_errors=True)
-        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def text_of_message(msg):
@@ -521,6 +529,36 @@ def split_user_turn_message(i, msg):
     return out
 
 
+CLAUDE_MD_FILE_RE = re.compile(r"(?m)^Contents of (\S+)")
+
+
+def split_claude_md_files(claudemd_text):
+    """Split the '# claudeMd' section's body into one row per loaded file.
+
+    Claude Code concatenates every CLAUDE.md-family file it loaded (global
+    ~/.claude/CLAUDE.md, any @-imported files like RTK.md, and — when the
+    session's cwd has one — that project's own CLAUDE.md) into this single
+    section, each announced by its own "Contents of <path> (...)" line. That
+    makes "claudeMd" in the generic system/messages breakdown an opaque lump
+    that conflates global config with whatever project the probe happened to
+    run in. Splitting it out here gives each file its own row so project-
+    loaded context is visible and comparable run-over-run as cwd changes.
+
+    Falls back to a single (None, whole_text) pseudo-row if no "Contents of"
+    marker is found (e.g. no CLAUDE.md loaded at all, or a future format
+    change), so callers don't have to special-case an empty split."""
+    markers = list(CLAUDE_MD_FILE_RE.finditer(claudemd_text))
+    if not markers:
+        return [(None, claudemd_text)]
+    out = []
+    for i, m in enumerate(markers):
+        path = m.group(1)
+        start = m.start()
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(claudemd_text)
+        out.append((path, claudemd_text[start:end]))
+    return out
+
+
 def md_escape(text):
     """Escape a preview string so it's safe inside a markdown table cell."""
     return text.replace("|", "\\|").replace("\n", " ")
@@ -545,7 +583,7 @@ def write_markdown_report(data, by_section, grand_total, extra_sections):
         "",
     ]
 
-    for section in ["system", "tools", "messages", "catalog", "config"]:
+    for section in ["system", "tools", "messages", "context", "catalog", "config"]:
         entries = by_section.get(section)
         if not entries:
             continue
@@ -626,7 +664,17 @@ def main():
         split = split_user_turn_message(i, msg)
         if split:
             for sub_label, sub_text in split:
-                rows.append(("messages", sub_label, count_text(sub_text), len(sub_text), preview_text(sub_text)))
+                # The claudeMd sub-block bundles every loaded CLAUDE.md-family
+                # file (global config + any project CLAUDE.md picked up from
+                # the probe's cwd) into one opaque blob — break it out into
+                # its own "context" section, one row per file, instead of
+                # letting it hide inside "messages" as a single lump.
+                if sub_label.endswith(": claudeMd"):
+                    for file_path, file_text in split_claude_md_files(sub_text):
+                        name = file_path or sub_label
+                        rows.append(("context", name, count_text(file_text), len(file_text), preview_text(file_text)))
+                else:
+                    rows.append(("messages", sub_label, count_text(sub_text), len(sub_text), preview_text(sub_text)))
         else:
             label = classify_message(i, msg)
             text = text_of_message(msg)
@@ -659,7 +707,7 @@ def main():
     print(f"TOKEN AUDIT — model={data.get('model')}  endpoint={BASE_URL}")
     print(f"{'='*72}\n")
 
-    for section in ["system", "tools", "messages", "catalog", "config"]:
+    for section in ["system", "tools", "messages", "context", "catalog", "config"]:
         if section not in by_section:
             continue
         entries = sorted(by_section[section], key=lambda e: -e[1])
