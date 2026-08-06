@@ -37,6 +37,7 @@ import glob
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,126 @@ def run_probe_request():
     return data
 
 
+# Env vars that mark this shell as running inside an existing Claude Code
+# session (set when a skill/subagent shells out via Bash). An interactive
+# child process inherits these and silently degrades (transcript saving off,
+# "manual mode", claude.ai connectors disabled) instead of behaving like a
+# real top-level session — strip them so the probe reflects a clean launch.
+_CHILD_SESSION_ENV_VARS = (
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDECODE",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_CODE_ENTRYPOINT",
+)
+
+
+def _read_available(fd, settle_seconds=1.0, max_seconds=45.0):
+    """Drain a PTY fd until output goes quiet for `settle_seconds`, or
+    `max_seconds` total elapses. Returns the concatenated bytes read.
+    Settle-based waiting instead of a fixed sleep, since response length
+    (and therefore streaming time) varies per probe."""
+    chunks = []
+    start = time.time()
+    last_data = start
+    while True:
+        now = time.time()
+        if now - start > max_seconds:
+            break
+        if chunks and (now - last_data) > settle_seconds:
+            break
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            chunks.append(data)
+            last_data = time.time()
+    return b"".join(chunks)
+
+
+def run_interactive_probe_request():
+    """Drive a real interactive `claude` session (no `-p`) through a PTY,
+    send "hey", and capture the raw request body via the same
+    OTEL_LOG_RAW_API_BODIES mechanism as run_probe_request().
+
+    `-p`/`--print` is a distinct, lighter-weight mode — it's missing some
+    tools and system-reminder content that only get loaded for a real
+    interactive session (confirmed by diffing captured request bodies:
+    an interactive session pulled in 109 tools including
+    EnterPlanMode/ExitPlanMode/EndConversation/AskUserQuestion and a
+    different mcp__atlassian__* server, none of which appeared in a `-p`
+    probe run from the same directory). This is the only way to measure
+    what a real `/clear`'d interactive session actually sends.
+
+    Uses a raw PTY (Python's built-in `pty`/`os`/`select` primitives, no
+    `expect` dependency) since Claude Code's interactive UI requires a real
+    terminal to start normally."""
+    import pty
+
+    otel_dir = tempfile.mkdtemp(prefix="rtk-token-audit-interactive-")
+    work_dir = os.getcwd()
+    env = dict(os.environ)
+    for var in _CHILD_SESSION_ENV_VARS:
+        env.pop(var, None)
+    env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+    env["OTEL_LOG_RAW_API_BODIES"] = f"file:{otel_dir}"
+
+    print(f"Firing interactive probe (`claude` via PTY in {work_dir})...", file=sys.stderr)
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            ["claude", "--model", MODEL],
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            env=env, cwd=work_dir, close_fds=True,
+        )
+    except FileNotFoundError:
+        print("ERROR: `claude` CLI not found on PATH.", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        os.close(slave_fd)
+
+    try:
+        # Wait for the startup UI to finish rendering before typing.
+        _read_available(master_fd, settle_seconds=1.5, max_seconds=20)
+
+        os.write(master_fd, b"hey\r")
+
+        # Wait for the response to finish streaming.
+        _read_available(master_fd, settle_seconds=2.0, max_seconds=60)
+
+        # Exit cleanly: Ctrl-C twice is Claude Code's interactive quit sequence.
+        os.write(master_fd, b"\x03")
+        time.sleep(0.3)
+        os.write(master_fd, b"\x03")
+        _read_available(master_fd, settle_seconds=0.5, max_seconds=5)
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        os.close(master_fd)
+
+    request_files = sorted(Path(otel_dir).glob("*.request.json"))
+    if not request_files:
+        print(f"ERROR: no request body captured in {otel_dir}. "
+              "The interactive probe may not have reached a ready state in time — "
+              "rerun, or check that OTEL_LOG_RAW_API_BODIES is supported by your "
+              "Claude Code version.", file=sys.stderr)
+        shutil.rmtree(otel_dir, ignore_errors=True)
+        sys.exit(1)
+
+    with open(request_files[-1]) as f:
+        data = json.load(f)
+
+    shutil.rmtree(otel_dir, ignore_errors=True)
+    return data
+
+
 def extract_system_blocks(system_field):
     """system can be a string or a list of {type, text, cache_control} blocks."""
     if isinstance(system_field, str):
@@ -229,11 +350,17 @@ def classify_message(i, msg):
 
 def find_catalog_message(messages):
     """Locate the mid-conversation system-reminder message that carries the
-    agent catalog, per-MCP-server instructions, and skill catalog, if present."""
+    agent catalog, per-MCP-server instructions, and skill catalog, if present.
+
+    Checked against every message regardless of role or content shape (string
+    vs. content-block array) — some backends deliver this as a block-array
+    user/system message wrapped in <system-reminder> tags rather than a bare
+    system-role string, and skipping those silently drops a large chunk of
+    real tokens from the audit."""
     for msg in messages:
-        content = msg.get("content")
-        if msg.get("role") == "system" and isinstance(content, str) and "Available agent types" in content:
-            return content
+        text = text_of_message(msg)
+        if "Available agent types" in text:
+            return text
     return None
 
 
@@ -564,7 +691,7 @@ def md_escape(text):
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def write_markdown_report(data, by_section, grand_total, extra_sections):
+def write_markdown_report(data, by_section, grand_total, extra_sections, interactive=False):
     """Write a full overview of every message/part sent in the probe request
     to output/<timestamp>.md — one table per section (system/tools/messages/
     catalog/config), each row showing tokens, %, chars, and a content preview,
@@ -572,10 +699,12 @@ def write_markdown_report(data, by_section, grand_total, extra_sections):
     terminal report. Returns the path written."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    out_path = OUTPUT_DIR / f"{timestamp}.md"
+    suffix = "_interactive" if interactive else ""
+    out_path = OUTPUT_DIR / f"{timestamp}{suffix}.md"
 
+    mode_label = "interactive session (PTY)" if interactive else "`claude -p` (print mode)"
     lines = [
-        f"# Token Audit — {timestamp}",
+        f"# Token Audit — {timestamp}  \nProbe mode: {mode_label}",
         "",
         f"- Model: `{data.get('model')}`",
         f"- Endpoint: `{BASE_URL}`",
@@ -608,6 +737,8 @@ def write_markdown_report(data, by_section, grand_total, extra_sections):
 
 
 def main():
+    interactive = "--interactive" in sys.argv[1:]
+
     supported = detect_system_tools_supported()
     if not supported:
         print("NOTE: this endpoint's count_tokens ignores `system`/`tools` fields "
@@ -616,7 +747,7 @@ def main():
               "message) — counts are still exact, just measured indirectly.\n",
               file=sys.stderr)
 
-    data = run_probe_request()
+    data = run_interactive_probe_request() if interactive else run_probe_request()
 
     rows = []  # (section, subsection, tokens, chars, preview)
 
@@ -654,8 +785,7 @@ def main():
     # skill gets its own token cost and can be checked against usage history.
     catalog_text = find_catalog_message(data.get("messages", []))
     for i, msg in enumerate(data.get("messages", [])):
-        content = msg.get("content")
-        if isinstance(content, str) and content == catalog_text:
+        if catalog_text is not None and text_of_message(msg) == catalog_text:
             continue  # handled below as its own section
         # The <system-reminder> wrapper bundles several independently-sized
         # things (memory recall, CLAUDE.md contents, currentDate, ...) — same
@@ -703,8 +833,9 @@ def main():
         by_section.setdefault(section, []).append((name, tokens, chars, preview))
 
     # --- print report ---
+    mode_label = "interactive session (PTY)" if interactive else "claude -p (print mode)"
     print(f"\n{'='*72}")
-    print(f"TOKEN AUDIT — model={data.get('model')}  endpoint={BASE_URL}")
+    print(f"TOKEN AUDIT — model={data.get('model')}  endpoint={BASE_URL}  probe={mode_label}")
     print(f"{'='*72}\n")
 
     for section in ["system", "tools", "messages", "context", "catalog", "config"]:
@@ -980,7 +1111,7 @@ def main():
     ts_md.append("instead of all schemas on every request. If TOOLS dominates, fix this before per-tool deny rules.")
     extra_md += ts_md
 
-    out_path = write_markdown_report(data, by_section, grand_total, extra_md)
+    out_path = write_markdown_report(data, by_section, grand_total, extra_md, interactive=interactive)
     print(f"\nFull overview written to: {out_path}")
 
 
