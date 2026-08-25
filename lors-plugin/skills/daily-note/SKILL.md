@@ -5,7 +5,7 @@ description: >
   "start the day", "/daily", "daily note anlegen", "tagesnotiz erstellen", or wants to
   set up their daily Obsidian note. Always use this skill when the user wants to create
   or open today's daily note in their Obsidian vault.
-version: 4.0.0
+version: 5.0.0
 ---
 
 # Daily Note Skill
@@ -24,6 +24,7 @@ Spalten:
 - **Task**: Task-Text
 - **Wiedervorlage**: Datum YYYY-MM-DD ab dem der Task wieder angezeigt wird
 - **Mal verschoben**: wie oft wurde dieser Task schon auf Wiedervorlage gelegt (erhöht sich jedes Mal wenn der User "Wiedervorlage" wählt)
+- **Erstellt am**: Datum YYYY-MM-DD, an dem der Task zum ersten Mal angelegt wurde. Wird beim Anlegen einer neuen Backlog-Zeile gesetzt und danach nie mehr verändert. Für Zeilen, die vor Einführung dieser Spalte angelegt wurden, bleibt das Feld leer (kein Alter anzeigbar/kein Alter=0 annehmen).
 - **Kategorie**: optional
 
 ## Workflow
@@ -68,63 +69,36 @@ Lies gleichzeitig den Backlog `$VAULT_DIR/1 - inbox/backlog.md` und sammle alle 
 
 Lies außerdem `$VAULT_DIR/1 - inbox/Inbox.md`. Trenne den Inhalt an `---` Trennlinien auf und behandle jeden nicht-leeren Block als einen Inbox-Eintrag. Zeige jeden Eintrag als kompakte Vorschau (erste Zeile oder erste 80 Zeichen).
 
-### 5. Top-10-Vorschlag + interaktive Triage
+### 5. Alle Kandidaten übernehmen, sortiert nach Priorität + Alter
 
-**Tageslimit: max. 10 Tasks in `Heute:`.** Ziel ist ein fokussierter Tag, nicht eine vollständige Liste.
+Keine Triage-Rückfrage mehr. Alle Kandidaten (Backlog fällig, offene Vortags-Todos, Inbox-Einträge, implizite Meeting-Tasks) kommen automatisch in die `Heute:` Sektion der neuen Note — kein Tageslimit, keine Bestätigung nötig.
 
-Sammle alle Kandidaten (Backlog fällig, offene Vortags-Todos, Inbox-Einträge, implizite Meeting-Tasks) und priorisiere sie:
+**Alter berechnen:** Für Backlog-Tasks mit gesetztem "Erstellt am" ist das Alter = heute − Erstellt am (in Tagen). Tasks ohne "Erstellt am" (Alt-Zeilen, oder Vortags-Todos/Meeting-Tasks/Inbox-Einträge, die neu in den Backlog wandern) bekommen beim ersten Auftauchen in diesem Lauf "Erstellt am" = heute gesetzt und starten bei Alter 0. Damit wächst das Alter ab jetzt korrekt mit, auch wenn die Historie davor nicht bekannt ist.
+
+**Sortierung** (bestimmt die Reihenfolge innerhalb der Kategorie-Sektionen in der Note):
 
 1. **Deadline** — Tasks mit explizitem Datum/Fälligkeit heute oder überfällig zuerst
-2. **Verschoben-Zähler** — ⚠️ Tasks mit "Mal verschoben" ≥ 3 als nächstes (Backlog-Spalte)
-3. **Meeting-Kontext** — Tasks die aus einem heutigen/aktuellen Meeting oder ONGOING-Arbeit stammen
+2. **Alter** — absteigend nach Tagen auf der Liste (Langläufer zuerst); Tasks mit Alter ≥ 7 Tagen bekommen **⚠️** Präfix und `(seit X Tagen)` Suffix
+3. **Verschoben-Zähler** — als weiteres Tie-Break-Signal, absteigend
 4. Rest nach ursprünglicher Reihenfolge (Backlog → Vortag → Meeting-implizit → Inbox)
 
-Markiere die Top 10 aus dieser Sortierung als **Vorschlag**, alles danach als **Rest-Pool**. Zeige beides:
+Jeder in die Note übernommene Task wird aus Backlog/Inbox entfernt (Backlog-Zeile gelöscht, Inbox-Block gelöscht). Vortags-Todos und implizite Meeting-Tasks werden **nicht** in den Backlog zurückgeschrieben — sie stehen einfach nur in der neuen Note.
+
+Zeige dem User nach dem Schreiben der Note kurz die Liste inkl. Alter-Anzeige, z.B.:
 
 ```
-Guten Morgen! Vorschlag für heute (max. 10):
-
-**Vorschlag:**
-1. ⚠️ Powerpoint Agent: mehr Slide-Layouts unterstützen (3x verschoben!)
+Heute übernommen (sortiert nach Alter):
+1. ⚠️ Powerpoint Agent: mehr Slide-Layouts unterstützen (seit 12 Tagen)
 2. SSH Key friction auflösen (Deadline heute)
-3. LiteLLM Präsentation erstellen (1x verschoben)
-4. AHT - Ticket zum testen
+3. LiteLLM Präsentation erstellen (seit 4 Tagen)
 ...
-10. Präsentation bis Freitag schicken [implizit] (aus: 11:00 FollowUp KI)
-
-**Rest-Pool (nicht im Vorschlag, bei Kapazität nachziehen):**
-11. Neuer Task XY
-12. Vera fragen wegen Storno-Prozess [implizit] (aus: 14:00 Storno-Prozess)
-13. Will einen plan machen wie wir service accounts unterstützen können... (Inbox)
-
-Vorschlag übernehmen? Sag **ja**, oder gib pro Task an:
-**h** = heute (auch für Rest-Pool-Tasks, um sie reinzuziehen), **w<N>** = Wiedervorlage in N Tagen, **s** = skip/löschen, **k** = (nur Inbox) in Inbox lassen
-z.B.: ja  ODER  h,h,s,w3,...,k
 ```
 
-Tasks mit "Mal verschoben" ≥ 3 bekommen **⚠️** Präfix und `(Xx verschoben!)` Suffix - sowohl in der Liste als auch später in der `Heute:` Sektion der Note.
+### 6. Backlog und Inbox aktualisieren
 
-Warte auf die Antwort des Users. Bei "ja": Vorschlag 1-10 werden **h**, Rest-Pool bleibt unangetastet (Backlog-Tasks im Backlog, Inbox-Einträge in Inbox, Vortags-Todos/implizite Tasks werden **nicht** automatisch weiterverschoben — sie stehen einfach nicht in der neuen Note und bleiben in der alten).
+Schreib den aktualisierten Backlog zurück: übernommene Tasks entfernt, neu angelegte Zeilen (aus Vortag/Meeting/Inbox, die zwar noch nicht fällig sind, aber im Vault als Backlog-Eintrag weitergeführt werden sollen) mit "Erstellt am" = heute.
 
-### 6. Triage auswerten
-
-Verarbeite die Antwort des Users:
-
-**Für Tasks (Backlog / Vortag / Meeting):**
-- **h** (heute): Task kommt in die `Heute:` Sektion der neuen Note. Task wird aus dem Backlog entfernt falls er dort war.
-- **w<N>** (Wiedervorlage): Task kommt **nicht** in die Note. Im Backlog:
-  - Falls bereits vorhanden: Wiedervorlage-Datum auf heute+N setzen, "Mal verschoben" um 1 erhöhen
-  - Falls neu: neue Zeile anlegen mit Wiedervorlage=heute+N, Mal verschoben=1
-- **s** (skip): Task wird weder in die Note noch in den Backlog aufgenommen. Falls im Backlog vorhanden: entfernen.
-
-Schreib den aktualisierten Backlog zurück.
-
-**Für Inbox-Einträge:**
-- **h** (heute): Eintrag kommt als Task in `Heute:` (erste Zeile als Task-Text). Eintrag wird aus Inbox.md entfernt.
-- **k** (keep): Eintrag bleibt unverändert in Inbox.md.
-- **s** (skip/löschen): Eintrag wird aus Inbox.md entfernt.
-
-Nach der Triage: Schreib die aktualisierte Inbox.md zurück (nur verbleibende Einträge, getrennt durch `---`, ohne führende/nachfolgende Leerzeilen).
+Schreib die aktualisierte Inbox.md zurück (nur verbleibende, nicht übernommene Einträge, getrennt durch `---`, ohne führende/nachfolgende Leerzeilen).
 
 ### 7. Jira-Tickets abfragen
 
@@ -181,18 +155,18 @@ Nach dem Ausführen des Scripts: Lies die Note erneut ein.
 
 #### Kategorie-Erkennung (Libri vs. Netlight)
 
-Für jeden mit **h** markierten Task Kategorie bestimmen:
+Für jeden übernommenen Task Kategorie bestimmen:
 
 1. **Backlog-Kategorie**: Falls Task aus Backlog kommt und Kategorie-Spalte "Libri" oder "Netlight" enthält → diese nutzen
 2. **Keyword-Erkennung** (wenn keine Backlog-Kategorie):
    - → **Libri**: Task-Text enthält `DATA-`, `Libri`, `libri`, `JIRA`, `Plureo`, `AHT`, `Storno`, `DWH`, `Pipeline`
    - → **Netlight**: Task-Text enthält `NL-`, `Netlight`, `netlight`, `EdgeEx`, `Staffing`, `CV`, `Proposal`
    - → **Allgemein**: kein Keyword matcht
-3. **Nachfragen** (wenn Kategorie immer noch unklar zwischen Libri/Netlight): Nach der h/w/s-Runde fragen: `Task X: Libri (L), Netlight (N) oder Allgemein (A)?` - nur für Tasks die mit h markiert wurden und nicht eindeutig erkannt wurden. Tasks ohne klaren Kontext landen in **Allgemein**.
+3. **Nachfragen** (wenn Kategorie immer noch unklar zwischen Libri/Netlight): Kurz nachfragen `Task X: Libri (L), Netlight (N) oder Allgemein (A)?` - nur für Tasks, die nicht eindeutig erkannt wurden. Tasks ohne klaren Kontext landen in **Allgemein**.
 
 #### Note-Format
 
-Erstelle `$VAULT_DIR/Daily Notes/<heute>.md` mit den Tasks die der User mit **h** markiert hat, aufgeteilt in Sektionen:
+Erstelle `$VAULT_DIR/Daily Notes/<heute>.md` mit allen übernommenen Tasks, aufgeteilt in Sektionen und innerhalb jeder Sektion nach Priorität/Alter sortiert (siehe Schritt 5):
 
 ```
 Top 3 Ziele:
@@ -207,7 +181,7 @@ Heute:
 
 ### Libri
 - [ ] Task A
-- [ ] ⚠️ Task B (3x verschoben!)
+- [ ] ⚠️ Task B (seit 9 Tagen)
 
 ---
 
@@ -227,12 +201,13 @@ Heute:
 - `Top 3 Ziele:` steht ganz oben in der Note, vor `Heute:`, immer mit genau 3 leeren `- [ ]` Checkboxen — wird nicht automatisch befüllt, der User trägt sie manuell ein
 - Tasks in `### Netlight`, `### Libri`, `### Allgemein` aufteilen — kein Präfix im Task-Text, Sektionsüberschrift reicht
 - Reihenfolge der Sektionen: Netlight → Libri → Allgemein
-- ⚠️-Markierung bei ≥3x verschoben kommt **nach** dem Präfix
+- Innerhalb jeder Sektion nach Priorität/Alter sortiert (siehe Schritt 5), Langläufer oben
+- ⚠️-Markierung + `(seit X Tagen)`-Suffix bei Alter ≥ 7 Tagen kommt **nach** dem Task-Text
 - Einrückung/Sub-Tasks beibehalten; Sub-Tasks erben die Kategorie des Parent
 - Sektion weglassen wenn leer (keine Libri-Tasks → kein `### Libri`)
 - Direkt nach `Heute:` Block kommt `---` Divider
 - Danach `## Jira`, dann Meetings
-- Wenn keine Tasks ausgewählt: `Heute:` bleibt leer (nur Überschrift, ohne Sektionen)
+- Wenn keine Kandidaten vorhanden: `Heute:` bleibt leer (nur Überschrift, ohne Sektionen)
 - Keine `Später:` Sektion
 
 ### 10. Fokus-Blöcke in die Note eintragen
@@ -257,7 +232,5 @@ Falls der User explizit einen Task als Zeitblock haben will (z.B. "DATA-1234 als
 
 Teile dem User kurz mit:
 - Datum der neuen Note
-- Welche Tasks heute mitgenommen wurden (nach Libri/Netlight aufgeteilt), Anzahl (max. 10)
-- Welche im Rest-Pool geblieben sind (bei Kapazität nachziehbar)
-- Welche auf Wiedervorlage in X Tagen liegen
+- Welche Tasks heute übernommen wurden (nach Libri/Netlight aufgeteilt), sortiert nach Alter, Langläufer (⚠️ ≥7 Tage) hervorgehoben
 - Welche Fokus-Blöcke in die Note eingetragen wurden
