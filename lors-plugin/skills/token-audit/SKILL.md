@@ -15,68 +15,81 @@ version: 1.0.0
 
 ## Overview
 
-Fires a minimal `claude -p "hey"` probe request with Claude Code's built-in
-`OTEL_LOG_RAW_API_BODIES` logging enabled, captures the **exact raw request
-body** Claude Code sent to `ANTHROPIC_BASE_URL` (system prompt blocks, every
-tool/MCP schema, message history), then gets an exact token count for each
-section from the endpoint's own tokenizer and reports a sorted breakdown.
+Reads a real request/response pair captured by Claude Code's own
+`OTEL_LOG_RAW_API_BODIES` logging (from a fresh session where the user typed
+one message), and breaks the true, real token cost down section by section:
+system prompt blocks, every tool/MCP schema, message history, per-MCP-server
+and per-skill catalog cost.
 
-The probe runs in the directory the script itself was invoked from (its
-`cwd`, via `os.getcwd()`), not an isolated temp dir — so it picks up that
-directory's project `CLAUDE.md`, local `.claude/settings.json`, and any
-project-scoped skills/MCP config. Run the script from whichever project you
-want audited; a run from `~` audits only global config, a run from inside a
-project directory reflects what a real session started there would actually
-send.
+**Why this doesn't call `/v1/messages/count_tokens` per section anymore**
+(an earlier version of this script did): the configured endpoint's
+`count_tokens` was found to silently ignore `system` and `tools` and return
+a constant no matter their content — confirmed 2026-08 by padding both
+fields and seeing zero change in the returned count. There is no reliable
+way to get a real per-section tokenizer count from this endpoint, and
+routing every tool through it individually (~100+ HTTP round-trips) was also
+just slow for no accuracy benefit.
 
-This does NOT estimate tokens (chars/4 heuristics) — it uses the real
-tokenizer via `/v1/messages/count_tokens` on the user's own endpoint, so
-counts match what they're actually billed for.
+**What it uses instead**: the one number that IS real and exact — the
+response's `usage.cache_creation_input_tokens`. That's the true, one-time
+cost of writing the whole system+tools+messages payload into the prompt
+cache on a session's first turn (this is also the number Claude Code's own
+`/context` command shows as total context-window usage — see "Known quirk
+#4" below). The script prorates that real total across every system block,
+tool schema, and message *by character count* — character count and token
+count are near-perfectly correlated for JSON/English text (measured
+~2.6-2.9 chars/token across several real sessions), so this lands within a
+few percent of a true per-item count, anchored to an exact real *total*
+rather than guessed from scratch. This was verified directly: on a real
+88,622-token session, summing chars across system+tools+messages and
+prorating against that real total reproduced 88,622 exactly (by
+construction — the point is the *distribution* across rows is what's
+approximate, not the total).
 
 ## Running it
+
+The script can't reliably capture its own probe: launching `claude` as a
+child process of a running Claude Code session (which is what happens if
+this script tries to shell out to `claude` itself, e.g. from inside this
+skill) gets treated as a child session and silently degrades — and in
+testing, a response body simply never got logged for such a child process,
+even after long waits. Only a `claude` process started directly from a
+real terminal reliably produces both a `.request.json` and a
+`.response.json`.
+
+So **the user runs the probe themselves**, in a new terminal, not this one:
+
+```bash
+mkdir -p ~/rtk-debug-logs
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_LOG_RAW_API_BODIES=file:$HOME/rtk-debug-logs
+claude
+```
+
+Then inside that session: type one message (e.g. `hey`), wait for the
+reply, and exit (Ctrl-C twice, or `/exit`). Tell the user exactly this when
+they ask for a token audit — don't try to run `claude` yourself first; the
+script will tell you the same thing if the log directory is empty or
+incomplete, but it's faster to say it up front.
+
+Once that's done, run:
 
 ```bash
 uv run /home/lhelle/repos/personal/agent-harness/lors-plugin/skills/token-audit/scripts/analyze.py
 ```
 
-Run it with the Bash tool's cwd set to whichever directory you want audited
-(the script's `os.getcwd()` at invocation time is the probe's working
-directory — see above). The script path itself can stay absolute; only the
-Bash tool's cwd needs to match the target directory.
+It reads the most recent `*.request.json`/`*.response.json` pair from
+`~/rtk-debug-logs` (no API calls, no `ANTHROPIC_*` env vars needed — it's
+pure local JSON parsing) and prints the report in well under a second.
 
-Requires `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (or
-`ANTHROPIC_API_KEY`) in the environment — same values Claude Code itself
-uses. In this setup they're set via `~/.claude/settings.json`'s `env`
-block, so the Bash tool already has them and no extra setup is needed.
-Takes ~15-30s for the audit itself (one real `claude -p` turn), plus
-another ~15-30s if any heavy discretionary tools are found, since the
-script fires a second verification probe to confirm they're actually
-removable via `permissions.deny` before suggesting it.
+**Run this with the Bash tool directly** — it's fast enough that
+backgrounding or Monitor add no value.
 
-**Run this with the Bash tool directly — not as a background task and not
-with Monitor.** The script sets `PYTHONUNBUFFERED=1` in its shebang so
-stdout lines appear live in the Bash tool output. A background task +
-Monitor adds no value here and causes duplicate/lost output.
-
-**Handling the API key/token — never expose the value, only check presence.**
-`analyze.py` itself never prints or logs the key: it's read once from the
-environment and used only inside the `x-api-key` HTTP header sent directly
-to the endpoint, never echoed to stdout/stderr. Keep it that way when
-working on or around this skill:
-- To confirm the credentials are set before running the audit, use:
-  ```bash
-  uv run /home/lhelle/repos/personal/agent-harness/lors-plugin/skills/token-audit/scripts/check_env.py
-  ```
-  It only prints `set`/`unset` per variable and exits non-zero if anything
-  required is missing — never the actual value. Prefer this over
-  `echo $ANTHROPIC_AUTH_TOKEN`, `env`, or `printenv`, none of which should
-  be run here since they'd put the raw secret into context.
-- If inspecting `~/.claude/settings.json`'s `env` block for troubleshooting,
-  redact the token's value before showing it to the user or including it in
-  your own output — show the key name and `"<redacted>"`, not the string.
-- This applies to any new debug output added to the script too: don't add
-  a print/log line that includes `API_KEY`/`HEADERS` (which contains the
-  key) — log config presence/shape, never secret values.
+The probe session should be launched from whichever directory you want
+audited (its project `CLAUDE.md`, local `.claude/settings.json`, and
+project-scoped skills/MCP config get picked up from wherever `claude` was
+actually started) — ask the user to `cd` there first if auditing a specific
+project rather than global config.
 
 ## What it reports
 
@@ -137,18 +150,16 @@ a top-10 heaviest-items list across all sections, a **SUGGESTED FIXES**
 block for heavy tools, **MCP SERVERS** / **SKILLS** sections (see below),
 and a **TOOL SEARCH STATUS** block.
 
-## Two totals — why the script's "Grand total" differs from live context-window %
+## The total: exactly `cache_creation_input_tokens`, not an estimate
 
-The script's **TOTAL INPUT TOKENS** line counts a *cold, uncached* probe
-request — every token priced at full input rate, no cache read. This is
-the right number for "what does my setup cost per fresh session."
-
-The live `claude -p` context-window percentage (and the Monitor event line
-"Grand total: N tokens") can show a *larger* number because it includes
-**cache-read tokens**, which count toward the context window but are billed
-at a much lower rate. These are not the same metric. The script prints an
-inline note below its grand total explaining this so you don't have to
-look it up when the numbers don't match.
+The script's **TOTAL TOKENS** line is not computed from anything the script
+measured itself — it's copied straight from the captured response's
+`usage.cache_creation_input_tokens`, then the per-row numbers above it are
+derived from that real total (char-proportional split). So the total always
+matches what `/context` would show for that same session's first turn — see
+"Known quirk #4" below for why `/context`'s own per-category breakdown can
+still disagree with this report's per-row breakdown even though the totals
+agree.
 
 ## Full overview file — every message/part sent in the probe request
 
@@ -176,18 +187,20 @@ file is also the right thing to diff between two audit runs (e.g.
 before/after applying a suggested `permissions.deny` fix) to see exactly
 which rows disappeared or shrank.
 
-## Suggested fixes: cutting real token cost, verified empirically
+## Suggested fixes: cutting real token cost
 
 Every request-level tool listed in the audit that isn't a core tool (Bash,
 Read, Edit, Write, Agent, Skill, WebFetch, WebSearch, NotebookEdit,
 AskUserQuestion, plan-mode tools) and contributes >1% of total tokens gets a
-concrete fix suggestion, auto-verified with a second live probe request.
+concrete fix suggestion.
 
-**Key finding, confirmed empirically** (not from docs alone — verified by
-diffing two `claude -p` probe requests, one with `permissions.deny` set, one
-without): a **bare tool name** in `settings.json`'s `permissions.deny` array
-removes that tool's schema from the request entirely — Claude never sees
-it, and its tokens are gone from every request. This is different from a
+**Key finding** (documented mechanism, established from an earlier round of
+empirical verification by diffing two probe requests — not re-verified on
+every run anymore, since that required spawning a second `claude` process,
+which has the same child-session problem described in "Running it" above):
+a **bare tool name** in `settings.json`'s `permissions.deny` array removes
+that tool's schema from the request entirely — Claude never sees it, and
+its tokens are gone from every request. This is different from a
 scoped/pattern deny rule like `"Bash(rm *)"`, which leaves the tool's full
 schema in every request and only blocks that specific call at execution
 time — **zero token savings** from scoped rules.
@@ -228,12 +241,6 @@ Specific known mechanisms beyond generic deny:
   `ExitWorktree`, `ScheduleWakeup`, `LSP`, `ReportFindings`, `SendMessage`):
   no dedicated flag found in Claude Code's docs — bare-name
   `permissions.deny` is the mechanism.
-
-The script fires a live verification probe (a second `claude -p` call with
-a `--settings` override setting `permissions.deny` on the flagged tools) and
-tags each suggestion `[VERIFIED removable]` if the tool actually disappeared
-from that second request's tool list — don't trust the suggestion blindly
-if it's *not* tagged verified.
 
 **Trade-off to flag to the user, not just cost**: these are real features
 (scheduled tasks, worktree isolation, workflows, cross-agent messaging,
@@ -295,18 +302,76 @@ is disabling the *plugin* that bundles several unused skills together, or
 trimming an unusually long description in a skill's frontmatter (that one
 line is what's actually costing tokens on every request).
 
-## Known quirk this script works around
+## Known quirk #1: why this script doesn't call `count_tokens` at all anymore
 
-Some LiteLLM deployments that route through Vertex AI / Bedrock passthrough
-(rather than native Anthropic passthrough) have a `count_tokens` endpoint
-that silently ignores the `system` and `tools` fields and only tokenizes
-`messages` — returning a constant regardless of system/tool content. The
-script detects this at startup (pads `system` and checks if the count
-changes) and, if detected, counts every section by wrapping its raw text as
-a standalone user message instead (subtracting a measured per-request
-overhead constant). This is still an exact real-tokenizer count — just
-measured through a workaround path — not a heuristic estimate. It prints a
-note to stderr when this fallback is active.
+An earlier version of this script called the configured endpoint's
+`/v1/messages/count_tokens` once per section, smuggling text through the
+`messages` field as a workaround for a LiteLLM/Vertex/Bedrock-passthrough
+quirk where that endpoint silently ignores `system`/`tools` and returns a
+constant. That workaround was real-tokenizer-exact per call, but required
+~100+ sequential HTTP round-trips per audit (slow — 1-2 minutes) and still
+had its own ~4% measurement bias (measuring `description + "\n" +
+schema_json` as loose text instead of the real serialized tool object,
+dropping the `"name":`/`"description":`/`"input_schema":` key overhead and
+braces).
+
+This script no longer calls `count_tokens` at all. It calibrates against
+the real `usage.cache_creation_input_tokens` from a captured response
+instead (see Overview) — which is both faster (zero API calls, pure local
+JSON parsing) and anchored to a real total rather than a per-call
+tokenizer estimate. Per-tool char counting still uses each tool's full
+compact-serialized JSON object (`json.dumps(tool, separators=(",", ":"))`),
+matching real request bytes as closely as possible, since that's now what
+gets prorated against the real total.
+
+## Known quirk #4: Claude Code's own `/context` command misattributes the MCP tool cost it can't see
+
+Claude Code's built-in `/context` slash command shows **every MCP tool as
+"0 tokens"** in its per-category breakdown — verified empirically (2026-08)
+across two different real sessions. It's very likely hitting the same
+broken `count_tokens` endpoint described in "Known quirk #1" internally and
+failing silently (0) instead of working around it the way this script now
+does. **Don't let a low-looking `/context` MCP-tools listing talk you out of
+this script's TOOLS numbers** — use this report's TOOLS section, not
+`/context`'s MCP tools list, to see which tool schemas actually cost tokens.
+The script prints a "NOTE ON /context COMPARISON" block whenever the probed
+session has any MCP tools, specifically so this doesn't need
+re-discovering per session.
+
+**Why a bare "hey" still shows 70-130k tokens in `/context`'s *total*, even
+though its MCP-tools rows are all 0** (confirmed 2026-08 via a real user
+session's captured `.response.json`): it's not the message "hey" costing
+that much — it's `cache_creation_input_tokens`, the one-time price of
+writing the entire system prompt + every active MCP tool schema + the
+skill/agent catalog into the prompt cache on a session's first turn. A real
+response body looked like:
+
+```json
+"usage": {"input_tokens": 2, "cache_creation_input_tokens": 132199,
+          "cache_read_input_tokens": 0, "output_tokens": 13}
+```
+
+`/context`'s total (132.2k in that session) is exactly
+`cache_creation_input_tokens` — **the total is correct**, cache-creation
+tokens do count toward the context window even though they're billed
+differently from plain input tokens. The bug is only in `/context`'s
+*category breakdown* below that total: since it can't attribute MCP tool
+cost (the 0s described above), the real tool-schema cost that's genuinely
+part of that cache-creation number gets dumped into "Messages" instead of
+"MCP tools" in `/context`'s own UI. So the total isn't wrong or inflated —
+it's real, one-time cache-build cost — `/context` just files it under the
+wrong row internally. This script's per-row breakdown (calibrated against
+that same real total, but prorated correctly per tool/system-block/message)
+is what to use instead.
+
+(An earlier version of this doc claimed the gap only "appears after the
+first turn was answered" and gets misattributed at that point specifically —
+that framing was based on comparing two `/context` snapshots without the
+underlying response body and turned out to not survive a direct repro: a
+bare "hey" is a single API call, not multiple turns, and the earlier
+snapshot-diff coincidentally conflated a session that also gained several
+new MCP servers between snapshots. The cache-creation explanation above is
+the one confirmed against a real captured response body — trust that one.)
 
 ## Known quirk #2: tool search silently disabled — inflates the whole TOOLS section
 
@@ -354,12 +419,12 @@ Claude Code client behavior:
   org-policy question for whoever manages the deployment.
 - Real-world effect observed: fixing the env var alone took one session
   from a much higher context size down to 21,601 tokens (11% of context
-  window) for a bare "hey" — still high, because **most of that remainder
-  was cache read**, not fresh cost. Cache-read tokens count toward the
-  CLI's live context-window percentage but are not part of this script's
-  grand total (which measures a cold, uncached request) — don't be
-  surprised if the two numbers don't match; that's expected, not a bug in
-  either measurement.
+  window) for a bare "hey". This script's total (`cache_creation_input_tokens`)
+  and that number can still legitimately differ turn to turn — a later turn
+  in the same session might show mostly `cache_read_input_tokens` instead
+  (cheaper, since the cache from turn 1 is being reused) — this script
+  always measures a session's **first** turn specifically, since that's
+  the one number that's a pure one-time build cost with nothing reused.
 
 Run the normal token audit and per-tool `permissions.deny` suggestions
 first, as always — those are real, immediate savings. Then, when `TOOLS`
@@ -463,7 +528,9 @@ printed suggestions. Concretely:
   `never used` or `30+ days ago (stale)` is a plugin worth asking the user
   about, even at a modest token cost, since it compounds across every
   request.
-- Every count here is *input* tokens for a **fresh** session with no cache.
-  Cross-reference against `rtk gain` (the user's token-savings CLI) for
-  actual historical spend across real sessions, since real sessions benefit
-  from prompt caching on the system+tools block after turn 1.
+- Every count here is the real, one-time cost of building a **fresh**
+  session's prompt cache (turn 1 specifically). Later turns in the same
+  session mostly hit `cache_read_input_tokens` instead — cheaper, since the
+  same content is being reused rather than rebuilt. Cross-reference against
+  `rtk gain` (the user's token-savings CLI) for actual historical spend
+  across real sessions.

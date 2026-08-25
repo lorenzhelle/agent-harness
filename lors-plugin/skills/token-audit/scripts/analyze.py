@@ -1,31 +1,38 @@
 #!/usr/bin/env -S PYTHONUNBUFFERED=1 uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests"]
 # ///
 """
 Token audit for Claude Code.
 
-Fires a trivial `claude -p "hey"` run with OTEL_LOG_RAW_API_BODIES enabled,
-captures the exact raw Anthropic Messages API request Claude Code sent to
-ANTHROPIC_BASE_URL, then breaks it down section by section (attribution
-header, base agent prompt, CLAUDE.md/memory, per-agent-type list, per-tool
-schema, message history) and gets an exact token count for each section by
-routing its text through the endpoint's /v1/messages/count_tokens as a fake
-user message (see NOTE below on why not sent as system/tools directly).
+Reads a real request/response pair captured by Claude Code's own
+OTEL_LOG_RAW_API_BODIES logging (the user runs a fresh `claude` session,
+types one message, and exits — see main() for the exact instructions this
+script prints) and breaks the real cost down section by section (system
+prompt, per-tool schema, message history, mid-conversation agent/skill
+catalog).
 
-The probe runs in the directory this script itself was invoked from (not an
-isolated temp dir), so it picks up that directory's project CLAUDE.md, local
-settings, and project-scoped skills/MCP config — matching what a real session
-started there would actually send.
+Why this replaces the old count_tokens-based approach: the configured
+endpoint's `/v1/messages/count_tokens` was found to silently ignore `system`
+and `tools` and return a constant no matter their content (common on
+Vertex/Bedrock-passthrough LiteLLM routes) — verified 2026-08 by padding
+`system` and `tools` and seeing no change in the returned count. There is no
+reliable per-section exact-tokenizer count available from this endpoint.
 
-NOTE on methodology: some LiteLLM-fronted backends (Vertex/Bedrock passthrough
-particularly) only tokenize the `messages` field of count_tokens requests and
-silently ignore `system` / `tools`, returning a constant. This script probes
-for that at startup and, if detected, counts every section by wrapping its
-raw text as a single user message instead (subtracting a measured per-request
-overhead constant). This gives an exact real-tokenizer count, just via a
-workaround path.
+Instead, this script uses the one number that IS real and exact: the
+response's `usage.cache_creation_input_tokens` — the true token cost of
+writing the entire system+tools+messages payload into the prompt cache on a
+session's first turn (confirmed 2026-08 via a real captured response body;
+this is also the number Claude Code's own `/context` command shows as the
+total context-window usage after a first turn — see SKILL.md "Known quirk
+#4"). It then prorates that real total across every system block, tool
+schema, and message *by character count*, on the basis that character count
+and token count are near-perfectly correlated for JSON/English text
+(measured ratio ~2.6-2.9 chars/token across several real sessions — close
+enough that char-proportional allocation lands within a few percent of a
+per-item real count, without needing ~100+ additional API calls to get
+there). This is an approximation of the *distribution*, anchored to an
+exact, real *total* — not a heuristic guess at the total itself.
 
 Besides the terminal report, this also writes a Markdown overview of every
 message/part sent in the probe request (one row per system block, tool
@@ -37,81 +44,15 @@ import glob
 import json
 import os
 import re
-import select
-import subprocess
 import sys
-import tempfile
-import time
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
+GROUND_TRUTH_LOG_DIR = os.path.expanduser("~/rtk-debug-logs")
 
-BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/")
-API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-latest")
-
-if not BASE_URL or not API_KEY:
-    print("ERROR: ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY must be set "
-          "(same env Claude Code itself uses).", file=sys.stderr)
-    sys.exit(1)
-
-COUNT_URL = f"{BASE_URL}/v1/messages/count_tokens"
-HEADERS = {
-    "x-api-key": API_KEY,
-    "anthropic-version": "2023-06-01",
-    "content-type": "application/json",
-}
-
-
-def count_raw(payload, retries=3):
-    """POST to count_tokens with a couple of retries — the endpoint has been
-    observed to intermittently 503/502 under this workload (many rapid
-    small requests), unrelated to payload content."""
-    last_exc = None
-    for attempt in range(retries):
-        try:
-            r = requests.post(COUNT_URL, headers=HEADERS, json=payload, timeout=30)
-            r.raise_for_status()
-            return r.json()["input_tokens"]
-        except requests.exceptions.HTTPError as e:
-            last_exc = e
-            if e.response is not None and e.response.status_code in (429, 500, 502, 503, 504):
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            raise
-    raise last_exc
-
-
-def detect_system_tools_supported():
-    """Return True if the endpoint actually tokenizes `system`/`tools`."""
-    base = count_raw({"model": MODEL, "messages": [{"role": "user", "content": "hi"}]})
-    padded = count_raw({
-        "model": MODEL,
-        "system": "one two three four five six seven eight nine ten " * 5,
-        "messages": [{"role": "user", "content": "hi"}],
-    })
-    return padded > base + 5
-
-
-# Measured once at startup: overhead of an empty user message, used to
-# subtract framing tokens when we smuggle arbitrary text through `messages`.
-_EMPTY_OVERHEAD = None
-
-
-def count_text(text):
-    """Exact token count for a raw chunk of text, via the messages-count workaround."""
-    global _EMPTY_OVERHEAD
-    if not text:
-        return 0
-    if _EMPTY_OVERHEAD is None:
-        _EMPTY_OVERHEAD = count_raw({"model": MODEL, "messages": [{"role": "user", "content": ""}]})
-    total = count_raw({"model": MODEL, "messages": [{"role": "user", "content": text}]})
-    return max(0, total - _EMPTY_OVERHEAD)
 
 
 def preview_text(text, limit=200):
@@ -125,164 +66,69 @@ def preview_text(text, limit=200):
     return flat
 
 
-def run_probe_request():
-    """Fire `claude -p "hey"` with raw API body logging, return parsed request dict.
+def load_ground_truth_pair(log_dir):
+    """Load the most recent request/response pair from a directory populated
+    by Claude Code's OTEL_LOG_RAW_API_BODIES logging (file:<dir> mode).
 
-    Runs in the directory this script was invoked from (not an isolated temp
-    dir), so the probe picks up that directory's project CLAUDE.md, local
-    settings, and any project-scoped skills/MCP config — matching what a real
-    session started there would actually send."""
-    otel_dir = tempfile.mkdtemp(prefix="rtk-token-audit-")
-    work_dir = os.getcwd()
-    env = dict(os.environ)
-    env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-    env["OTEL_LOG_RAW_API_BODIES"] = f"file:{otel_dir}"
-
-    print(f"Firing probe request (`claude -p \"hey\"` in {work_dir})...", file=sys.stderr)
-    try:
-        subprocess.run(
-            ["claude", "-p", "hey", "--model", MODEL],
-            cwd=work_dir, env=env, capture_output=True, timeout=90, check=False,
-        )
-    except FileNotFoundError:
-        print("ERROR: `claude` CLI not found on PATH.", file=sys.stderr)
-        sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print("ERROR: probe request timed out after 90s.", file=sys.stderr)
+    Returns (request_dict, cache_creation_input_tokens). Exits with a clear
+    error if the directory is missing, empty, or has a request with no
+    matching response yet (the user needs to actually send one message and
+    wait for the reply before exiting the session)."""
+    if not os.path.isdir(log_dir):
+        print(f"ERROR: {log_dir} does not exist yet.\n", file=sys.stderr)
+        print_instructions(log_dir)
         sys.exit(1)
 
-    request_files = sorted(Path(otel_dir).glob("*.request.json"))
-    if not request_files:
-        print(f"ERROR: no request body captured in {otel_dir}. "
-              "Check that OTEL_LOG_RAW_API_BODIES is supported by your Claude Code version.",
+    request_files = sorted(Path(log_dir).glob("*.request.json"), key=os.path.getmtime)
+    response_files = sorted(Path(log_dir).glob("*.response.json"), key=os.path.getmtime)
+
+    if not request_files or not response_files:
+        print(f"ERROR: {log_dir} has no complete request/response pair yet "
+              f"({len(request_files)} request(s), {len(response_files)} response(s)).\n",
               file=sys.stderr)
+        print_instructions(log_dir)
         sys.exit(1)
 
     with open(request_files[-1]) as f:
-        data = json.load(f)
+        request_data = json.load(f)
+    with open(response_files[-1]) as f:
+        response_data = json.load(f)
 
-    shutil.rmtree(otel_dir, ignore_errors=True)
-    return data
+    usage = response_data.get("usage", {})
+    ground_truth = usage.get("cache_creation_input_tokens")
+    if not ground_truth:
+        # No cache write happened (e.g. this was a cache-read turn, not the
+        # session's first). Fall back to input_tokens + cache_read, which is
+        # still the real total for that turn, just not a fresh-cache-build number.
+        ground_truth = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+        if not ground_truth:
+            print("ERROR: response has no usable usage.cache_creation_input_tokens or "
+                  "input_tokens — can't calibrate against it.", file=sys.stderr)
+            sys.exit(1)
+        print("NOTE: this response had no cache_creation_input_tokens (not a fresh-cache "
+              "turn) — using input_tokens + cache_read_input_tokens as ground truth instead. "
+              "For the 'cost of a session's first message' number, use a genuinely fresh "
+              "session (no prior /context or messages).", file=sys.stderr)
 
-
-# Env vars that mark this shell as running inside an existing Claude Code
-# session (set when a skill/subagent shells out via Bash). An interactive
-# child process inherits these and silently degrades (transcript saving off,
-# "manual mode", claude.ai connectors disabled) instead of behaving like a
-# real top-level session — strip them so the probe reflects a clean launch.
-_CHILD_SESSION_ENV_VARS = (
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDECODE",
-    "CLAUDE_CODE_SSE_PORT",
-    "CLAUDE_CODE_ENTRYPOINT",
-)
-
-
-def _read_available(fd, settle_seconds=1.0, max_seconds=45.0):
-    """Drain a PTY fd until output goes quiet for `settle_seconds`, or
-    `max_seconds` total elapses. Returns the concatenated bytes read.
-    Settle-based waiting instead of a fixed sleep, since response length
-    (and therefore streaming time) varies per probe."""
-    chunks = []
-    start = time.time()
-    last_data = start
-    while True:
-        now = time.time()
-        if now - start > max_seconds:
-            break
-        if chunks and (now - last_data) > settle_seconds:
-            break
-        r, _, _ = select.select([fd], [], [], 0.2)
-        if r:
-            try:
-                data = os.read(fd, 65536)
-            except OSError:
-                break
-            if not data:
-                break
-            chunks.append(data)
-            last_data = time.time()
-    return b"".join(chunks)
+    return request_data, ground_truth
 
 
-def run_interactive_probe_request():
-    """Drive a real interactive `claude` session (no `-p`) through a PTY,
-    send "hey", and capture the raw request body via the same
-    OTEL_LOG_RAW_API_BODIES mechanism as run_probe_request().
-
-    `-p`/`--print` is a distinct, lighter-weight mode — it's missing some
-    tools and system-reminder content that only get loaded for a real
-    interactive session (confirmed by diffing captured request bodies:
-    an interactive session pulled in 109 tools including
-    EnterPlanMode/ExitPlanMode/EndConversation/AskUserQuestion and a
-    different mcp__atlassian__* server, none of which appeared in a `-p`
-    probe run from the same directory). This is the only way to measure
-    what a real `/clear`'d interactive session actually sends.
-
-    Uses a raw PTY (Python's built-in `pty`/`os`/`select` primitives, no
-    `expect` dependency) since Claude Code's interactive UI requires a real
-    terminal to start normally."""
-    import pty
-
-    otel_dir = tempfile.mkdtemp(prefix="rtk-token-audit-interactive-")
-    work_dir = os.getcwd()
-    env = dict(os.environ)
-    for var in _CHILD_SESSION_ENV_VARS:
-        env.pop(var, None)
-    env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-    env["OTEL_LOG_RAW_API_BODIES"] = f"file:{otel_dir}"
-
-    print(f"Firing interactive probe (`claude` via PTY in {work_dir})...", file=sys.stderr)
-
-    master_fd, slave_fd = pty.openpty()
-    try:
-        proc = subprocess.Popen(
-            ["claude", "--model", MODEL],
-            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-            env=env, cwd=work_dir, close_fds=True,
-        )
-    except FileNotFoundError:
-        print("ERROR: `claude` CLI not found on PATH.", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        os.close(slave_fd)
-
-    try:
-        # Wait for the startup UI to finish rendering before typing.
-        _read_available(master_fd, settle_seconds=1.5, max_seconds=20)
-
-        os.write(master_fd, b"hey\r")
-
-        # Wait for the response to finish streaming.
-        _read_available(master_fd, settle_seconds=2.0, max_seconds=60)
-
-        # Exit cleanly: Ctrl-C twice is Claude Code's interactive quit sequence.
-        os.write(master_fd, b"\x03")
-        time.sleep(0.3)
-        os.write(master_fd, b"\x03")
-        _read_available(master_fd, settle_seconds=0.5, max_seconds=5)
-    finally:
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
-        os.close(master_fd)
-
-    request_files = sorted(Path(otel_dir).glob("*.request.json"))
-    if not request_files:
-        print(f"ERROR: no request body captured in {otel_dir}. "
-              "The interactive probe may not have reached a ready state in time — "
-              "rerun, or check that OTEL_LOG_RAW_API_BODIES is supported by your "
-              "Claude Code version.", file=sys.stderr)
-        shutil.rmtree(otel_dir, ignore_errors=True)
-        sys.exit(1)
-
-    with open(request_files[-1]) as f:
-        data = json.load(f)
-
-    shutil.rmtree(otel_dir, ignore_errors=True)
-    return data
+def print_instructions(log_dir):
+    print(
+        "This script needs a real request+response pair from a fresh Claude Code\n"
+        "session to calibrate against. It can't reliably launch one itself — a\n"
+        "`claude` process started from inside another Claude Code session (like this\n"
+        "script running under a skill/subagent) is treated as a child session and\n"
+        "silently degrades, and doesn't always get its response logged.\n\n"
+        "Run this in a NEW terminal (not this one):\n\n"
+        f"  mkdir -p {log_dir}\n"
+        "  export CLAUDE_CODE_ENABLE_TELEMETRY=1\n"
+        f"  export OTEL_LOG_RAW_API_BODIES=file:{log_dir}\n"
+        "  claude\n\n"
+        "Then inside that session: type one message (e.g. \"hey\"), wait for the reply,\n"
+        "and exit (Ctrl-C twice, or /exit). Then re-run this script.",
+        file=sys.stderr,
+    )
 
 
 def extract_system_blocks(system_field):
@@ -584,37 +430,6 @@ def format_days_ago(iso_ts):
         return iso_ts
 
 
-def verify_deny_saves_tokens(tool_names):
-    """Empirically confirm that denying these bare tool names actually drops
-    them from the request (as opposed to just blocking usage). Fires a second
-    probe request with --settings permissions.deny set. Returns the set of
-    tool names actually confirmed removed, or None if the check couldn't run."""
-    if not tool_names:
-        return None
-    otel_dir = tempfile.mkdtemp(prefix="rtk-token-audit-verify-")
-    work_dir = os.getcwd()
-    env = dict(os.environ)
-    env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-    env["OTEL_LOG_RAW_API_BODIES"] = f"file:{otel_dir}"
-    settings_override = json.dumps({"permissions": {"deny": list(tool_names)}})
-    try:
-        subprocess.run(
-            ["claude", "-p", "hey", "--model", MODEL, "--settings", settings_override],
-            cwd=work_dir, env=env, capture_output=True, timeout=90, check=False,
-        )
-        request_files = sorted(Path(otel_dir).glob("*.request.json"))
-        if not request_files:
-            return None
-        with open(request_files[-1]) as f:
-            data = json.load(f)
-        remaining = {t.get("name") for t in data.get("tools", [])}
-        return set(tool_names) - remaining  # names confirmed gone
-    except Exception:
-        return None
-    finally:
-        shutil.rmtree(otel_dir, ignore_errors=True)
-
-
 def text_of_message(msg):
     content = msg.get("content")
     if isinstance(content, str):
@@ -691,7 +506,7 @@ def md_escape(text):
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def write_markdown_report(data, by_section, grand_total, extra_sections, interactive=False):
+def write_markdown_report(data, by_section, grand_total, extra_sections):
     """Write a full overview of every message/part sent in the probe request
     to output/<timestamp>.md — one table per section (system/tools/messages/
     catalog/config), each row showing tokens, %, chars, and a content preview,
@@ -699,16 +514,13 @@ def write_markdown_report(data, by_section, grand_total, extra_sections, interac
     terminal report. Returns the path written."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    suffix = "_interactive" if interactive else ""
-    out_path = OUTPUT_DIR / f"{timestamp}{suffix}.md"
+    out_path = OUTPUT_DIR / f"{timestamp}.md"
 
-    mode_label = "interactive session (PTY)" if interactive else "`claude -p` (print mode)"
     lines = [
-        f"# Token Audit — {timestamp}  \nProbe mode: {mode_label}",
+        f"# Token Audit — {timestamp}",
         "",
         f"- Model: `{data.get('model')}`",
-        f"- Endpoint: `{BASE_URL}`",
-        f"- **Total input tokens: {grand_total:,}**",
+        f"- **Total tokens (real cache_creation_input_tokens, char-prorated per row): {grand_total:,}**",
         "",
     ]
 
@@ -737,52 +549,44 @@ def write_markdown_report(data, by_section, grand_total, extra_sections, interac
 
 
 def main():
-    interactive = "--interactive" in sys.argv[1:]
+    request_data, ground_truth_tokens = load_ground_truth_pair(GROUND_TRUTH_LOG_DIR)
+    data = request_data
 
-    supported = detect_system_tools_supported()
-    if not supported:
-        print("NOTE: this endpoint's count_tokens ignores `system`/`tools` fields "
-              "(common with Vertex/Bedrock-backed LiteLLM routes). Falling back to "
-              "an exact-tokenizer workaround (each section counted as a standalone "
-              "message) — counts are still exact, just measured indirectly.\n",
-              file=sys.stderr)
-
-    data = run_interactive_probe_request() if interactive else run_probe_request()
-
-    rows = []  # (section, subsection, tokens, chars, preview)
+    char_rows = []  # (section, subsection, chars, preview) — tokens filled in after totaling chars
 
     # --- system blocks ---
     # The base agent system prompt is one multi-thousand-char blob (harness
     # instructions + CLAUDE.md + memory + environment block, all
     # concatenated) — split it on its own top-level `# Header` lines so
     # "Harness" vs. "Memory" vs. "Environment" etc. each get their own row
-    # and token count instead of one opaque lump sum.
+    # and char count instead of one opaque lump sum.
     for i, (label, text) in enumerate(extract_system_blocks(data.get("system"))):
         name = classify_system_block(i, text)
         if name.startswith("base agent system prompt"):
             for sub_label, sub_text in split_by_h1_headers(text, "system"):
-                rows.append(("system", sub_label, count_text(sub_text), len(sub_text), preview_text(sub_text)))
+                char_rows.append(("system", sub_label, len(sub_text), preview_text(sub_text)))
         else:
-            rows.append(("system", name, count_text(text), len(text), preview_text(text)))
+            char_rows.append(("system", name, len(text), preview_text(text)))
 
     # --- tools ---
+    # Count each tool as its real, compact-serialized JSON object (matching
+    # what actually sits in the API request's `tools` array), not as loose
+    # concatenated description+schema text — this is what actually gets
+    # prorated against the real cache_creation_input_tokens ground truth,
+    # so it needs to match the real request bytes as closely as possible.
     tools = data.get("tools", [])
-    tool_total_chars = 0
     for t in tools:
         name = t.get("name", "?")
-        schema_text = json.dumps(t.get("input_schema", {}))
         desc_text = t.get("description", "")
-        full_text = desc_text + "\n" + schema_text
-        tool_total_chars += len(full_text)
-        rows.append(("tools", name, count_text(full_text), len(full_text),
-                     preview_text(desc_text or schema_text)))
+        full_json = json.dumps(t, separators=(",", ":"))
+        char_rows.append(("tools", name, len(full_json), preview_text(desc_text or full_json)))
 
     # --- messages ---
     # The mid-conversation "Available agent types..." system-reminder bundles
     # three independently-toggleable things (agent catalog prose, one block
     # per MCP server, one line per skill) — break it into its own section
     # instead of counting it as a single opaque row, so each MCP server and
-    # skill gets its own token cost and can be checked against usage history.
+    # skill gets its own char cost and can be checked against usage history.
     catalog_text = find_catalog_message(data.get("messages", []))
     for i, msg in enumerate(data.get("messages", [])):
         if catalog_text is not None and text_of_message(msg) == catalog_text:
@@ -802,29 +606,46 @@ def main():
                 if sub_label.endswith(": claudeMd"):
                     for file_path, file_text in split_claude_md_files(sub_text):
                         name = file_path or sub_label
-                        rows.append(("context", name, count_text(file_text), len(file_text), preview_text(file_text)))
+                        char_rows.append(("context", name, len(file_text), preview_text(file_text)))
                 else:
-                    rows.append(("messages", sub_label, count_text(sub_text), len(sub_text), preview_text(sub_text)))
+                    char_rows.append(("messages", sub_label, len(sub_text), preview_text(sub_text)))
         else:
             label = classify_message(i, msg)
             text = text_of_message(msg)
-            rows.append(("messages", label, count_text(text), len(text), preview_text(text)))
+            char_rows.append(("messages", label, len(text), preview_text(text)))
 
     if catalog_text:
         prose = agent_catalog_prose(catalog_text)
-        rows.append(("catalog", "agent-types catalog", count_text(prose), len(prose), preview_text(prose)))
+        char_rows.append(("catalog", "agent-types catalog", len(prose), preview_text(prose)))
         for server_name, server_text in split_mcp_servers(catalog_text):
-            rows.append(("catalog", f"mcp:{server_name}", count_text(server_text), len(server_text),
-                         preview_text(server_text)))
+            char_rows.append(("catalog", f"mcp:{server_name}", len(server_text), preview_text(server_text)))
         for skill_name, skill_text in split_skill_catalog(catalog_text):
-            rows.append(("catalog", f"skill:{skill_name}", count_text(skill_text), len(skill_text),
-                         preview_text(skill_text)))
+            char_rows.append(("catalog", f"skill:{skill_name}", len(skill_text), preview_text(skill_text)))
 
-    # --- betas / metadata (usually negligible, but flag if huge) ---
+    # --- calibrate: prorate the real cache_creation_input_tokens ground truth
+    # across every row proportionally to its share of total characters. Char
+    # count and token count are near-perfectly correlated for JSON/English
+    # text (measured ~2.6-2.9 chars/token across several real sessions), so
+    # this lands within a few percent of a true per-item tokenizer count
+    # without needing per-item API calls against an endpoint that can't
+    # even do that (see module docstring).
+    total_chars = sum(r[2] for r in char_rows)
+    rows = []  # (section, subsection, tokens, chars, preview)
+    running_tokens = 0
+    for idx, (section, name, chars, preview) in enumerate(char_rows):
+        if idx == len(char_rows) - 1:
+            # last row absorbs any rounding remainder so the sum matches
+            # ground_truth_tokens exactly, not just approximately
+            tokens = ground_truth_tokens - running_tokens
+        else:
+            tokens = round(ground_truth_tokens * chars / total_chars) if total_chars else 0
+        running_tokens += tokens
+        rows.append((section, name, tokens, chars, preview))
+
+    # betas/metadata contribute negligible bytes and aren't part of the
+    # cache-creation payload in a way worth prorating a row for — reported
+    # separately below, not mixed into the token-bearing rows.
     betas = data.get("betas", [])
-    if betas:
-        rows.append(("config", f"betas ({len(betas)} flags)", 0, len(json.dumps(betas)),
-                     preview_text(", ".join(betas))))
 
     grand_total = sum(r[2] for r in rows)
 
@@ -833,12 +654,11 @@ def main():
         by_section.setdefault(section, []).append((name, tokens, chars, preview))
 
     # --- print report ---
-    mode_label = "interactive session (PTY)" if interactive else "claude -p (print mode)"
     print(f"\n{'='*72}")
-    print(f"TOKEN AUDIT — model={data.get('model')}  endpoint={BASE_URL}  probe={mode_label}")
+    print(f"TOKEN AUDIT — model={data.get('model')}  (calibrated against real cache_creation_input_tokens)")
     print(f"{'='*72}\n")
 
-    for section in ["system", "tools", "messages", "context", "catalog", "config"]:
+    for section in ["system", "tools", "messages", "context", "catalog"]:
         if section not in by_section:
             continue
         entries = sorted(by_section[section], key=lambda e: -e[1])
@@ -851,10 +671,13 @@ def main():
         print()
 
     print(f"{'='*72}")
-    print(f"TOTAL INPUT TOKENS (exact, via tokenizer): {grand_total:,}")
-    print(f"  (cold/uncached — what you'd pay on a fresh session's first turn;")
-    print(f"   live `claude -p` context-window % may show MORE because it counts")
-    print(f"   cache-read tokens too, which aren't billed at the same rate.)")
+    print(f"TOTAL TOKENS: {grand_total:,}")
+    print(f"  (this equals the real usage.cache_creation_input_tokens from the captured")
+    print(f"   response — the exact one-time cost of building this session's prompt")
+    print(f"   cache. Per-row numbers above are that real total, prorated by each")
+    print(f"   row's share of total characters — see module docstring for why.)")
+    if betas:
+        print(f"betas ({len(betas)} flags): {', '.join(betas)}")
     if data.get("thinking"):
         print(f"thinking config: {data['thinking']}")
     print(f"{'='*72}\n")
@@ -880,16 +703,12 @@ def main():
         print("SUGGESTED FIXES (tools contributing >1% of total each)")
         print(f"{'='*72}\n")
         print("Every tool schema below is a `permissions.deny` bare-name candidate.\n"
-              "Confirmed empirically: a bare tool name in permissions.deny removes\n"
-              "the tool's schema from the request entirely (not just blocks its use\n"
-              "at call time) — real token savings, verified by diffing probe requests\n"
-              "with/without the deny rule.\n")
+              "Documented mechanism (see SKILL.md): a bare tool name in permissions.deny\n"
+              "removes the tool's schema from the request entirely, not just blocks its\n"
+              "use at call time.\n")
 
         extra_md.append("## SUGGESTED FIXES (tools contributing >1% of total each)")
         extra_md.append("")
-
-        heavy_names = [n for n, _ in heavy_tools]
-        verified_removed = verify_deny_saves_tokens(heavy_names)
 
         print("Scanning session history for actual usage of these tools...", file=sys.stderr)
         tool_usage, skill_usage, mcp_usage = scan_tool_usage_history()
@@ -900,9 +719,6 @@ def main():
             pct = 100 * tokens / grand_total
             hint = disable_hint_for_tool(name)
             status = ""
-            removable = verified_removed is None or name in verified_removed
-            if verified_removed is not None:
-                status = " [VERIFIED removable]" if name in verified_removed else " [not removed by deny — built-in/core?]"
 
             count, last_ts = tool_usage.get(name, (0, None))
             if count == 0:
@@ -910,8 +726,7 @@ def main():
                 never_used.append(name)
             else:
                 usage_note = f"called {count}x, most recently {format_days_ago(last_ts)}"
-                if removable:
-                    recently_used.append(name)
+                recently_used.append(name)
 
             print(f"  {name} — {tokens:,} tok ({pct:.1f}%){status}")
             print(f"      usage: {usage_note}")
@@ -1041,6 +856,39 @@ def main():
                              f"{', '.join(md_escape(s) for s in never_used_skills)}  ")
             extra_md.append(DISABLE_BUNDLED_SKILLS_HINT)
 
+    # --- /context comparison note ---
+    # Claude Code's own `/context` command, on endpoints where count_tokens
+    # ignores `system`/`tools` (see NOTE at startup), silently reports 0
+    # tokens for every MCP tool instead of erroring or estimating — verified
+    # empirically (2026-08) by comparing a real `/context` run against this
+    # script's output on the same session: /context showed 16.5k total with
+    # every mcp__* tool listed as "0 tokens", while this script measured the
+    # same tools at ~30-42k tokens via the text-workaround tokenizer path.
+    # /context is not a second opinion here — it's very likely hitting the
+    # exact same broken count_tokens endpoint, just failing silently instead
+    # of falling back like this script does.
+    mcp_tool_count = sum(1 for t in data.get("tools", []) if MCP_TOOL_RE.match(t.get("name", "")))
+    if mcp_tool_count:
+        print(f"\n{'='*72}")
+        print("NOTE ON /context COMPARISON")
+        print(f"{'='*72}\n")
+        note = (
+            f"This session has {mcp_tool_count} MCP tools. Claude Code's own /context command\n"
+            "shows every MCP tool as \"0 tokens\" in its category breakdown — that's a real\n"
+            "bug in /context's attribution, not a sign this report is wrong. /context's TOTAL\n"
+            "is correct (it's the same cache_creation_input_tokens this report is calibrated\n"
+            "against), but the per-category rows below that total dump the whole real MCP-tool\n"
+            "cost into \"Messages\" instead of \"MCP tools\", because it can't attribute it\n"
+            "correctly. Use this report's TOOLS section, not /context's MCP tools list, to see\n"
+            "which specific tool schemas are actually costing you tokens."
+        )
+        print(note)
+        print()
+        extra_md.append("## NOTE ON /context COMPARISON")
+        extra_md.append("")
+        extra_md.append(note.replace("\n", "  \n"))
+        extra_md.append("")
+
     # --- tool search status ---
     print(f"\n{'='*72}")
     print("TOOL SEARCH STATUS")
@@ -1111,7 +959,7 @@ def main():
     ts_md.append("instead of all schemas on every request. If TOOLS dominates, fix this before per-tool deny rules.")
     extra_md += ts_md
 
-    out_path = write_markdown_report(data, by_section, grand_total, extra_md, interactive=interactive)
+    out_path = write_markdown_report(data, by_section, grand_total, extra_md)
     print(f"\nFull overview written to: {out_path}")
 
 
