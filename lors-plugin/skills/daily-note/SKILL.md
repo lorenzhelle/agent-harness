@@ -100,32 +100,7 @@ Schreib den aktualisierten Backlog zurück: übernommene Tasks entfernt, neu ang
 
 Schreib die aktualisierte Inbox.md zurück (nur verbleibende, nicht übernommene Einträge, getrennt durch `---`, ohne führende/nachfolgende Leerzeilen).
 
-### 7. Jira-Tickets abfragen
-
-Nutze `acli jira` (nicht MCP) über das Script - es macht beide Abfragen, formatiert das `## Jira` Markdown fertig und gibt nur den fertigen Block aus (kein rohes JSON im Kontext):
-
-```bash
-uv run $SKILL_DIR/fetch_jira_summary.py
-```
-
-Das Script fragt aktive Tickets (In Arbeit/Test/In Review) und die 3 ältesten Backlog/Ready-for-Dev-Tickets ab (`assignee = currentUser()`, Projekt `DATA`, `issuetype != Epic`) und gibt direkt fertiges Markdown zurück, z.B.:
-
-```
-## Jira
-
-**In Arbeit / Test**
-- [DATA-3553](https://libri-gmbh.atlassian.net/browse/DATA-3553) Ticket-Titel
-
-> [!todo]- Backlog Erinnerung
-> - [DATA-3079](https://libri-gmbh.atlassian.net/browse/DATA-3079) Ticket-Titel (ältestes)
-> - [DATA-3078](https://libri-gmbh.atlassian.net/browse/DATA-3078) Ticket-Titel
-```
-
-Output 1:1 in die Note übernehmen. Script lässt "In Arbeit / Test" automatisch weg wenn leer.
-
-Die `## Jira` Sektion kommt **nach** dem `---` Divider und **vor** den Meetings.
-
-### 8. Meetings eintragen
+### 7. Meetings eintragen
 
 Führe das Script aus, bevor die Note geschrieben wird:
 
@@ -151,7 +126,7 @@ Unterschied zu `inject_meetings.py`:
 
 Nach dem Ausführen des Scripts: Lies die Note erneut ein.
 
-### 9. Daily Note schreiben
+### 8. Daily Note schreiben
 
 #### Kategorie-Erkennung (Libri vs. Netlight)
 
@@ -185,14 +160,6 @@ Heute:
 
 ---
 
-## Jira
-
-**In Arbeit / Test**
-- [DATA-XXXX](https://libri-gmbh.atlassian.net/browse/DATA-XXXX) Ticket-Titel
-
-> [!todo]- Backlog Erinnerung
-> - [DATA-XXXX](https://libri-gmbh.atlassian.net/browse/DATA-XXXX) Ticket-Titel (ältestes)
-
 ## HH:MM-HH:MM Meeting Name
 
 ```
@@ -206,11 +173,11 @@ Heute:
 - Einrückung/Sub-Tasks beibehalten; Sub-Tasks erben die Kategorie des Parent
 - Sektion weglassen wenn leer (keine Libri-Tasks → kein `### Libri`)
 - Direkt nach `Heute:` Block kommt `---` Divider
-- Danach `## Jira`, dann Meetings
+- Danach Meetings
 - Wenn keine Kandidaten vorhanden: `Heute:` bleibt leer (nur Überschrift, ohne Sektionen)
 - Keine `Später:` Sektion
 
-### 10. Fokus-Blöcke in die Note eintragen
+### 9. Fokus-Blöcke in die Note eintragen
 
 Kein Kalender-Push mehr — Fokus-Blöcke werden nur als Markdown-Überschriften in der Note eingetragen (analog zu Meetings), damit sie in Obsidians Agenda/Day-Planner View auftauchen.
 
@@ -228,7 +195,7 @@ Bei ≥4 Meetings: nur 1 Netlight-Block (morgens).
 
 Falls der User explizit einen Task als Zeitblock haben will (z.B. "DATA-1234 als Zeitblock"), frag nach Dauer und füge eine passende `## HH:MM-HH:MM Titel` Zeile manuell hinzu.
 
-### 11. Bestätigung
+### 10. Bestätigung
 
 Teile dem User kurz mit:
 - Datum der neuen Note
