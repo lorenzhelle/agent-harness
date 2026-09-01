@@ -24,6 +24,8 @@ Env-Var `VAULT_DEMO_MODE=1` blendet Netlight komplett aus (z.B. für eine Live-D
 - `create_focus_blocks.py` benennt den Check-Block von `📱 Slack Check` in `💬 Teams / Outlook Check` um (Libri nutzt Teams/Outlook statt Slack)
 - Beim Schreiben der Note (Schritt 8): Kategorie-Erkennung ignoriert Netlight-Keywords, alles was sonst als Netlight erkannt würde landet in **Allgemein**; die `### Netlight` Sektion wird nie erzeugt
 
+`VAULT_DEMO_MODE` einfach übernehmen, nicht beim User nachfragen ob der Modus so bleiben soll — die Var ist die explizite Konfiguration des Users für diese Shell/Session, kein Grund zur Rückfrage. Nur falls die Note bereits existiert und ihr Inhalt erkennbar zum jeweils anderen Modus passt (z.B. Netlight-Sektion vorhanden obwohl `VAULT_DEMO_MODE=1` gesetzt ist), kurz darauf hinweisen statt zu fragen.
+
 Aktivieren vor der Demo: `export VAULT_DEMO_MODE=1` im Terminal, aus dem Claude Code gestartet wird. Danach wieder deaktivieren mit `unset VAULT_DEMO_MODE` (oder neues Terminal öffnen) um zum Standard-Modus mit Libri + Netlight zurückzukehren. Die Var wirkt nur für die Scripts — falls unklar ob sie gesetzt ist, mit `echo $VAULT_DEMO_MODE` prüfen.
 
 ## Backlog-Format
