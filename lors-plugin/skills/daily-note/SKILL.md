@@ -28,6 +28,12 @@ Env-Var `VAULT_DEMO_MODE=1` blendet Netlight komplett aus (z.B. für eine Live-D
 
 Aktivieren vor der Demo: `export VAULT_DEMO_MODE=1` im Terminal, aus dem Claude Code gestartet wird. Danach wieder deaktivieren mit `unset VAULT_DEMO_MODE` (oder neues Terminal öffnen) um zum Standard-Modus mit Libri + Netlight zurückzukehren. Die Var wirkt nur für die Scripts — falls unklar ob sie gesetzt ist, mit `echo $VAULT_DEMO_MODE` prüfen.
 
+**Kein Netlight-Content in den Kontext laden, wenn `VAULT_DEMO_MODE=1` gesetzt ist:** Beim Lesen des Backlogs (Schritt 4) Zeilen mit Kategorie-Spalte "Netlight" komplett ignorieren — nicht einlesen/zitieren und erst recht nicht ausgeben, auch nicht zwischenzeitlich. Das gilt für jede Quelle, nicht nur den Kalender: Netlight-Inhalte sollen im Demo-Modus gar nicht erst ins Modell-Kontextfenster gelangen, nicht nachträglich aus der fertigen Note rausgefiltert werden.
+
+## Kommunikationsstil
+
+Keine Zwischenkommentare pro Schritt (kein "Ich prüfe jetzt...", "Ich lese...", "VAULT_DEMO_MODE ist aktiv, das übernehme ich..."). Arbeite die Schritte still ab und melde dich erst am Ende mit der kompakten Zusammenfassung aus Schritt 11 (Bestätigung). Eine kurze Meldung mitten im Ablauf ist nur bei einer echten Entscheidung/Warnung angebracht (z.B. Note existiert schon, Kalender nicht ladbar), nicht als Statusanzeige für jeden einzelnen Schritt.
+
 ## Backlog-Format
 
 Die Backlog-Datei liegt unter `$VAULT_DIR/1 - inbox/backlog.md`.
@@ -77,7 +83,7 @@ Diese als `[implizit]` markieren damit der User weiß dass es keine explizite Ch
 
 Falls `# wo war ich` Sektion existiert: alle Bullet Points ebenfalls als Tasks behandeln.
 
-Lies gleichzeitig den Backlog `$VAULT_DIR/1 - inbox/backlog.md` und sammle alle Tasks deren Wiedervorlage-Datum ≤ heute ist.
+Lies gleichzeitig den Backlog `$VAULT_DIR/1 - inbox/backlog.md` und sammle alle Tasks deren Wiedervorlage-Datum ≤ heute ist. Bei `VAULT_DEMO_MODE=1`: Zeilen mit Kategorie "Netlight" beim Sammeln direkt überspringen (siehe Demo-Modus-Abschnitt oben) — nicht als Kandidat aufnehmen.
 
 Lies außerdem `$VAULT_DIR/1 - inbox/Inbox.md`. Trenne den Inhalt an `---` Trennlinien auf und behandle jeden nicht-leeren Block als einen Inbox-Eintrag. Zeige jeden Eintrag als kompakte Vorschau (erste Zeile oder erste 80 Zeichen).
 
