@@ -16,6 +16,15 @@ Erstellt eine neue Daily Note fur heute im Obsidian-Vault unter `$VAULT_DIR/Dail
 - `$SKILL_DIR` = Ordner dieses Skills (wo diese SKILL.md liegt) — dort liegen die Python-Scripts
 - `$VAULT_DIR` = Obsidian-Vault-Root. Env-Var `VAULT_DIR` nutzen falls gesetzt, sonst Standardpfad je Maschine (z.B. WSL: `/mnt/c/Users/lhelle/Documents/para-vault`, Mac: `~/.../para-vault`). Falls unklar: User fragen oder Obsidian-Vault-Pfad im Dateisystem suchen.
 
+## Demo-Modus
+
+Env-Var `VAULT_DEMO_MODE=1` blendet Netlight komplett aus (z.B. für eine Live-Demo bei Libri):
+- `inject_meetings.py` / `refetch_meetings.py` fragen nur den Libri-Kalender ab, kein Netlight-ICS-Feed
+- `create_focus_blocks.py` plant keine 🔵 Netlight-Fokusblöcke mehr (auch nicht den morgendlichen Default-Block)
+- Beim Schreiben der Note (Schritt 8): Kategorie-Erkennung ignoriert Netlight-Keywords, alles was sonst als Netlight erkannt würde landet in **Allgemein**; die `### Netlight` Sektion wird nie erzeugt
+
+Aktivieren vor der Demo: `export VAULT_DEMO_MODE=1` im Terminal, aus dem Claude Code gestartet wird. Danach wieder deaktivieren mit `unset VAULT_DEMO_MODE` (oder neues Terminal öffnen) um zum Standard-Modus mit Libri + Netlight zurückzukehren. Die Var wirkt nur für die Scripts — falls unklar ob sie gesetzt ist, mit `echo $VAULT_DEMO_MODE` prüfen.
+
 ## Backlog-Format
 
 Die Backlog-Datei liegt unter `$VAULT_DIR/1 - inbox/backlog.md`.
@@ -132,12 +141,12 @@ Nach dem Ausführen des Scripts: Lies die Note erneut ein.
 
 Für jeden übernommenen Task Kategorie bestimmen:
 
-1. **Backlog-Kategorie**: Falls Task aus Backlog kommt und Kategorie-Spalte "Libri" oder "Netlight" enthält → diese nutzen
+1. **Backlog-Kategorie**: Falls Task aus Backlog kommt und Kategorie-Spalte "Libri" oder "Netlight" enthält → diese nutzen (im Demo-Modus: "Netlight" wird zu "Allgemein" umgebucht)
 2. **Keyword-Erkennung** (wenn keine Backlog-Kategorie):
    - → **Libri**: Task-Text enthält `DATA-`, `Libri`, `libri`, `JIRA`, `Plureo`, `AHT`, `Storno`, `DWH`, `Pipeline`
-   - → **Netlight**: Task-Text enthält `NL-`, `Netlight`, `netlight`, `EdgeEx`, `Staffing`, `CV`, `Proposal`
+   - → **Netlight**: Task-Text enthält `NL-`, `Netlight`, `netlight`, `EdgeEx`, `Staffing`, `CV`, `Proposal` — **im Demo-Modus (`VAULT_DEMO_MODE=1`) übersprungen**, diese Tasks fallen durch zu Allgemein
    - → **Allgemein**: kein Keyword matcht
-3. **Nachfragen** (wenn Kategorie immer noch unklar zwischen Libri/Netlight): Kurz nachfragen `Task X: Libri (L), Netlight (N) oder Allgemein (A)?` - nur für Tasks, die nicht eindeutig erkannt wurden. Tasks ohne klaren Kontext landen in **Allgemein**.
+3. **Nachfragen** (wenn Kategorie immer noch unklar zwischen Libri/Netlight): Kurz nachfragen `Task X: Libri (L), Netlight (N) oder Allgemein (A)?` - nur für Tasks, die nicht eindeutig erkannt wurden. Tasks ohne klaren Kontext landen in **Allgemein**. Im Demo-Modus diese Rückfrage nicht stellen, sondern direkt Allgemein nutzen.
 
 #### Note-Format
 
@@ -171,7 +180,7 @@ Heute:
 - Innerhalb jeder Sektion nach Priorität/Alter sortiert (siehe Schritt 5), Langläufer oben
 - ⚠️-Markierung + `(seit X Tagen)`-Suffix bei Alter ≥ 7 Tagen kommt **nach** dem Task-Text
 - Einrückung/Sub-Tasks beibehalten; Sub-Tasks erben die Kategorie des Parent
-- Sektion weglassen wenn leer (keine Libri-Tasks → kein `### Libri`)
+- Sektion weglassen wenn leer (keine Libri-Tasks → kein `### Libri`; im Demo-Modus immer, da nie Netlight-Tasks anfallen)
 - Direkt nach `Heute:` Block kommt `---` Divider
 - Danach Meetings
 - Wenn keine Kandidaten vorhanden: `Heute:` bleibt leer (nur Überschrift, ohne Sektionen)
@@ -189,7 +198,7 @@ Das Script berechnet freie Slots und plant:
 - 🔵 **Netlight Fokus**: 1-2 Blöcke (45-90min), morgens vor 12 Uhr + nachmittags ab 13 Uhr
 - 🟢 **Libri Fokus**: größter verbleibender freier Block
 
-Bei ≥4 Meetings: nur 1 Netlight-Block (morgens).
+Bei ≥4 Meetings: nur 1 Netlight-Block (morgens). Im Demo-Modus (`VAULT_DEMO_MODE=1`) entfallen alle Netlight-Fokusblöcke, die komplette Zeit wird als Libri-Fokus geplant.
 
 `--print-md` gibt die Blöcke als `## HH:MM-HH:MM 🔵/🟢 Titel` Zeilen aus (nach der `[markdown]` Markierung in stdout). Diese Zeilen in die Meetings-Sektion der Note einfügen, chronologisch nach Uhrzeit zwischen die bestehenden Meeting-Überschriften einsortiert.
 

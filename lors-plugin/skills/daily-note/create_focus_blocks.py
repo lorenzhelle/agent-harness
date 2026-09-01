@@ -32,9 +32,12 @@ import recurring_ical_events
 
 N8N_WEBHOOK_URL = os.environ.get("N8N_FOCUS_WEBHOOK_URL", "http://localhost:5678/webhook/focus-blocks")
 N8N_DELETE_WEBHOOK_URL = os.environ.get("N8N_FOCUS_DELETE_WEBHOOK_URL", "http://localhost:5678/webhook/focus-blocks-delete")
+DEMO_MODE = os.environ.get("VAULT_DEMO_MODE", "").lower() in ("1", "true", "yes")
 
 # (context, url) — Reihenfolge bestimmt Kontext-Tag
 ICS_SOURCES = [
+    ("Libri",    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
+] if DEMO_MODE else [
     ("Libri",    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
     ("Netlight", "https://outlook.office365.com/owa/calendar/070b9b43f03648939e2577402922a5c9@netlight.com/2f09c0315ea74b729ac60711ec78a57d15135075663695882613/calendar.ics"),
 ]
@@ -146,8 +149,8 @@ def assign_context_to_gaps(
                 # Kurze Lücke zwischen gleichen Kontexten → selber Kontext
                 gap_ctx = prev_ctx
             elif prev_ctx is None:
-                # Morgendliche Lücke vor erstem Meeting → immer Netlight
-                gap_ctx = "Netlight"
+                # Morgendliche Lücke vor erstem Meeting → immer Netlight (außer im Demo-Modus)
+                gap_ctx = "Libri" if DEMO_MODE else "Netlight"
             elif prev_ctx and gap_min <= CONTEXT_GAP_MIN:
                 # Kurze Lücke zwischen verschiedenen Kontexten → vorheriger Kontext gewinnt
                 gap_ctx = prev_ctx
