@@ -42,7 +42,7 @@ MEETING_HEADING_RE = re.compile(
     r"^## (?:(\d{2}:\d{2}(?:-\d{2}:\d{2})?|ganztägig)) (.+)$"
 )
 
-FOCUS_TITLE_RE = re.compile(r"^(🔵 Netlight Fokus|🟢 Libri Fokus|🔘 Fokus|📱 Slack Check)$")
+FOCUS_TITLE_RE = re.compile(r"^(🔵 Netlight Fokus|🟢 Libri Fokus|🔘 Fokus|📱 Slack Check|💬 Teams / Outlook Check)$")
 
 
 def fetch_events(ics_url: str, target_date: date, context: str = "Libri") -> list[dict]:

@@ -352,6 +352,7 @@ def serialize_blocks(blocks: list[dict]) -> list[dict]:
 SLACK_MORNING_DEADLINE = time(9, 15)   # Slack-Check muss vor diesem Meeting sein
 SLACK_EVENING_START    = time(17, 0)
 SLACK_DURATION_MIN     = 15
+SLACK_CHECK_TITLE      = "💬 Teams / Outlook Check" if DEMO_MODE else "📱 Slack Check"
 
 
 def plan_slack_blocks(target_date: date, timeline: list[dict], focus_blocks: list[dict], now: datetime) -> list[dict]:
@@ -392,7 +393,7 @@ def plan_slack_blocks(target_date: date, timeline: list[dict], focus_blocks: lis
         slack_start = nl_start if nl_start else now
 
     slack_blocks.append({
-        "title":   "📱 Slack Check",
+        "title":   SLACK_CHECK_TITLE,
         "start":   slack_start,
         "end":     slack_start + timedelta(minutes=SLACK_DURATION_MIN),
         "context": "Allgemein",
@@ -421,7 +422,7 @@ def plan_slack_blocks(target_date: date, timeline: list[dict], focus_blocks: lis
             slack_start_e = evening
 
         slack_blocks.append({
-            "title":   "📱 Slack Check",
+            "title":   SLACK_CHECK_TITLE,
             "start":   slack_start_e,
             "end":     slack_start_e + timedelta(minutes=SLACK_DURATION_MIN),
             "context": "Allgemein",
@@ -499,7 +500,7 @@ def main():
     if not args.no_delete:
         print("Lösche bestehende Blöcke...")
         delete_existing(str(target_date), webhook_url, [
-            "🔵 Netlight Fokus", "🟢 Libri Fokus", "🔘 Fokus", "📱 Slack Check"
+            "🔵 Netlight Fokus", "🟢 Libri Fokus", "🔘 Fokus", "📱 Slack Check", "💬 Teams / Outlook Check"
         ])
 
     send_to_n8n(str(target_date), serialized, webhook_url)
