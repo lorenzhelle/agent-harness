@@ -6,6 +6,8 @@
 """
 refetch_meetings.py - Aktualisiert die Meetings-Sektion in einer Obsidian Daily Note.
 
+Libri-only variant (no Netlight calendar) — for daily-note-libri.
+
 Holt den aktuellen Kalender, vergleicht mit bestehenden Meeting-Blöcken und:
 - Fügt neue Meetings hinzu
 - Entfernt gecancelte Meetings (Titel-Match)
@@ -30,8 +32,7 @@ import recurring_ical_events
 VAULT_DIR = os.environ.get("VAULT_DIR", "/mnt/c/Users/lhelle/Documents/para-vault")
 VAULT_ROOT = os.path.join(VAULT_DIR, "Daily Notes")
 ICS_SOURCES = [
-    ("Libri",    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
-    ("Netlight", "https://outlook.office365.com/owa/calendar/070b9b43f03648939e2577402922a5c9@netlight.com/2f09c0315ea74b729ac60711ec78a57d15135075663695882613/calendar.ics"),
+    ("Libri", "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
 ]
 
 # Matches: ## HH:MM-HH:MM Title  or  ## ganztägig Title
@@ -39,7 +40,7 @@ MEETING_HEADING_RE = re.compile(
     r"^## (?:(\d{2}:\d{2}(?:-\d{2}:\d{2})?|ganztägig)) (.+)$"
 )
 
-FOCUS_TITLE_RE = re.compile(r"^(🔵 Netlight Fokus|🟢 Libri Fokus|🔘 Fokus|📱 Slack Check)$")
+FOCUS_TITLE_RE = re.compile(r"^(🟢 Libri Fokus|🔘 Fokus|💬 Teams / Outlook Check)$")
 
 
 def fetch_events(ics_url: str, target_date: date, context: str = "Libri") -> list[dict]:
@@ -100,8 +101,7 @@ def format_meeting_heading(event: dict) -> str:
         time_str = event["start_time"]
     else:
         time_str = "ganztägig"
-    prefix = "🔵 " if event.get("context") == "Netlight" else ""
-    return f"## {time_str} {prefix}{event['summary']}"
+    return f"## {time_str} {event['summary']}"
 
 
 def parse_meeting_blocks(lines: list[str]) -> list[dict]:
@@ -270,7 +270,7 @@ def refetch_meetings(note_path: str, events: list[dict]) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Refetch and update meetings in Obsidian Daily Note")
+    parser = argparse.ArgumentParser(description="Refetch and update meetings in Obsidian Daily Note (Libri-only)")
     parser.add_argument("--tomorrow", action="store_true")
     parser.add_argument("--date", help="YYYY-MM-DD")
     args = parser.parse_args()
@@ -285,7 +285,7 @@ def main():
     note_path = os.path.join(VAULT_ROOT, target_date.strftime("%Y-%m-%d") + ".md")
 
     print(f"Datum: {target_date}, Note: {note_path}")
-    print("Lade ICS-Feeds...")
+    print("Lade ICS-Feed (Libri)...")
 
     events = []
     for ctx, url in ICS_SOURCES:

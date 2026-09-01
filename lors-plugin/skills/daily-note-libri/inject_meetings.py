@@ -6,6 +6,8 @@
 """
 inject_meetings.py - Injects Outlook meetings from ICS feed into Obsidian Daily Notes
 
+Libri-only variant (no Netlight calendar) — for daily-note-libri.
+
 Usage:
     python inject_meetings.py                  # Today's note
     python inject_meetings.py --tomorrow       # Tomorrow's note
@@ -24,8 +26,7 @@ import recurring_ical_events
 VAULT_DIR = os.environ.get("VAULT_DIR", "/mnt/c/Users/lhelle/Documents/para-vault")
 VAULT_ROOT = os.path.join(VAULT_DIR, "Daily Notes")
 ICS_SOURCES = [
-    ("Libri",    "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
-    ("Netlight", "https://outlook.office365.com/owa/calendar/070b9b43f03648939e2577402922a5c9@netlight.com/2f09c0315ea74b729ac60711ec78a57d15135075663695882613/calendar.ics"),
+    ("Libri", "https://outlook.office365.com/owa/calendar/dc40573ee407482dab7bd1d3369f8a58@libri.de/332b20a1ab084aba9add674b25921b2c2431110006149550985/calendar.ics"),
 ]
 
 
@@ -89,8 +90,7 @@ def format_meeting_block(event: dict) -> str:
         time_str = event["start_time"]
     else:
         time_str = "ganztägig"
-    prefix = "🔵 " if event.get("context") == "Netlight" else ""
-    return f"## {time_str} {prefix}{event['summary']}\n"
+    return f"## {time_str} {event['summary']}\n"
 
 
 def inject_into_note(note_path: str, events: list[dict], target_date: date) -> None:
@@ -126,7 +126,7 @@ def inject_into_note(note_path: str, events: list[dict], target_date: date) -> N
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inject Outlook meetings into Obsidian Daily Note")
+    parser = argparse.ArgumentParser(description="Inject Outlook meetings into Obsidian Daily Note (Libri-only)")
     parser.add_argument("--tomorrow", action="store_true", help="Use tomorrow's note instead of today")
     parser.add_argument("--ics-url", help="ICS feed URL (overrides env var)")
     parser.add_argument("--date", help="Specific date (YYYY-MM-DD)")
@@ -141,7 +141,7 @@ def main():
 
     note_path = os.path.join(VAULT_ROOT, target_date.strftime("%Y-%m-%d") + ".md")
     print(f"Datum: {target_date}, Note: {note_path}")
-    print("Lade ICS-Feeds...")
+    print("Lade ICS-Feed (Libri)...")
 
     sources = [(args.ics_url, args.ics_url)] if args.ics_url else ICS_SOURCES
     events = []
