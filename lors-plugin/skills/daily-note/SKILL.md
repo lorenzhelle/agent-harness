@@ -83,9 +83,11 @@ Diese als `[implizit]` markieren damit der User weiß dass es keine explizite Ch
 
 Falls `# wo war ich` Sektion existiert: alle Bullet Points ebenfalls als Tasks behandeln.
 
-Lies gleichzeitig den Backlog `$VAULT_DIR/1 - inbox/backlog.md` und sammle alle Tasks deren Wiedervorlage-Datum ≤ heute ist. Bei `VAULT_DEMO_MODE=1`: Zeilen mit Kategorie "Netlight" beim Sammeln direkt überspringen (siehe Demo-Modus-Abschnitt oben) — nicht als Kandidat aufnehmen.
+Lies gleichzeitig den Backlog `$VAULT_DIR/1 - inbox/backlog.md` und sammle alle Tasks deren Wiedervorlage-Datum ≤ heute ist.
 
 Lies außerdem `$VAULT_DIR/1 - inbox/Inbox.md`. Trenne den Inhalt an `---` Trennlinien auf und behandle jeden nicht-leeren Block als einen Inbox-Eintrag. Zeige jeden Eintrag als kompakte Vorschau (erste Zeile oder erste 80 Zeichen).
+
+**Bei `VAULT_DEMO_MODE=1`: an jeder dieser Quellen (Vortags-Checkboxen, implizite Meeting-Tasks, Backlog-Zeilen, Inbox-Einträge) jeden Kandidaten verwerfen, der erkennbar zu Netlight gehört** — Backlog-Kategorie "Netlight", oder Text der die Netlight-Keywords aus Schritt 8 enthält (`NL-`, `Netlight`, `netlight`, `EdgeEx`, `Staffing`, `CV`, `Proposal`), oder sonst klar Netlight-Kontext hat (Personennamen/Themen die erkennbar zu Netlight gehören, auch ohne Keyword-Treffer). Verworfene Kandidaten **nicht** als "Allgemein" aufnehmen — sie fallen komplett weg, so als hätte es sie nie gegeben. Das gilt für die gesamte Erfassung in diesem Schritt, nicht nur für den Backlog.
 
 ### 5. Alle Kandidaten übernehmen, sortiert nach Priorität + Alter
 
@@ -148,14 +150,14 @@ Nach dem Ausführen des Scripts: Lies die Note erneut ein.
 
 #### Kategorie-Erkennung (Libri vs. Netlight)
 
-Für jeden übernommenen Task Kategorie bestimmen:
+Für jeden übernommenen Task Kategorie bestimmen. **Im Demo-Modus (`VAULT_DEMO_MODE=1`) sollte dieser Schritt idealerweise gar keinen Netlight-Task mehr sehen — Schritt 4 hat sie bereits verworfen.** Diese Kategorie-Erkennung ist die zweite Absicherung, falls doch ein Netlight-Task durchgerutscht ist:
 
-1. **Backlog-Kategorie**: Falls Task aus Backlog kommt und Kategorie-Spalte "Libri" oder "Netlight" enthält → diese nutzen (im Demo-Modus: "Netlight" wird zu "Allgemein" umgebucht)
+1. **Backlog-Kategorie**: Falls Task aus Backlog kommt und Kategorie-Spalte "Libri" oder "Netlight" enthält → diese nutzen. Im Demo-Modus: "Netlight" → Task **komplett verwerfen** (nicht aufnehmen, auch nicht als Allgemein)
 2. **Keyword-Erkennung** (wenn keine Backlog-Kategorie):
    - → **Libri**: Task-Text enthält `DATA-`, `Libri`, `libri`, `JIRA`, `Plureo`, `AHT`, `Storno`, `DWH`, `Pipeline`
-   - → **Netlight**: Task-Text enthält `NL-`, `Netlight`, `netlight`, `EdgeEx`, `Staffing`, `CV`, `Proposal` — **im Demo-Modus (`VAULT_DEMO_MODE=1`) übersprungen**, diese Tasks fallen durch zu Allgemein
+   - → **Netlight**: Task-Text enthält `NL-`, `Netlight`, `netlight`, `EdgeEx`, `Staffing`, `CV`, `Proposal`. Im Demo-Modus: Task **komplett verwerfen** (nicht aufnehmen, auch nicht als Allgemein)
    - → **Allgemein**: kein Keyword matcht
-3. **Nachfragen** (wenn Kategorie immer noch unklar zwischen Libri/Netlight): Kurz nachfragen `Task X: Libri (L), Netlight (N) oder Allgemein (A)?` - nur für Tasks, die nicht eindeutig erkannt wurden. Tasks ohne klaren Kontext landen in **Allgemein**. Im Demo-Modus diese Rückfrage nicht stellen, sondern direkt Allgemein nutzen.
+3. **Nachfragen** (wenn Kategorie immer noch unklar zwischen Libri/Netlight): Kurz nachfragen `Task X: Libri (L), Netlight (N) oder Allgemein (A)?` - nur für Tasks, die nicht eindeutig erkannt wurden. Tasks ohne klaren Kontext landen in **Allgemein**. Im Demo-Modus diese Rückfrage nicht stellen — falls der Task auch nur möglicherweise Netlight-Bezug hat, verwerfen statt raten; nur bei eindeutig neutralen Tasks Allgemein nutzen.
 
 #### Note-Format
 
